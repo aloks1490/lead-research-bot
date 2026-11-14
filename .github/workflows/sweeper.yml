@@ -9,6 +9,8 @@ on:
 
 jobs:
   sweep:
+    # Skipped until the bot is deployed and the BOT_URL repository variable is set, so it does not fail every 5 minutes.
+    if: ${{ vars.BOT_URL != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Call the sweep endpoint
