@@ -23,7 +23,7 @@ flowchart LR
     CL -- "HTTP API column" --> CB["POST /webhooks/clay<br/>check secret, upsert, resume job"]
     CB --> R
     R -- "read: contact, company, deals" --> HS[HubSpot]
-    R -- "fact sheet" --> C[Claude]
+    R -- "fact sheet" --> C["Model<br/>(NVIDIA NIM or Claude)"]
     C -- "brief (JSON)" --> CK[Fact checker]
     CK -- "pass, or template on fail" --> R
     R -- "brief in thread" --> AE
@@ -45,7 +45,7 @@ Every request is one row in `research_jobs`. Each step does its work, then moves
 | `cache_hit` / `cache_miss` | `prospects` looked up by normalised URL; fresh means enriched within 30 days | [jobs.py](leadbot/jobs.py) |
 | `enriching` → `enriched` | Cache miss only: URL sent to Clay; Clay's callback upserts `prospects` and `companies` and resumes the job | [clay.py](leadbot/clay.py) |
 | `checked` | HubSpot read; suppression verdict computed in code and stored | [hubspot.py](leadbot/hubspot.py), [suppression.py](leadbot/suppression.py) |
-| `briefed` | Fact sheet → Claude → fact checker; template brief if anything fails | [brief.py](leadbot/brief.py), [check.py](leadbot/check.py) |
+| `briefed` | Fact sheet → model → fact checker; template brief if anything fails | [brief.py](leadbot/brief.py), [check.py](leadbot/check.py) |
 | `done` | Brief posted in the thread; contact created if new; note attached to contact and company | [jobs.py](leadbot/jobs.py) |
 | `failed` | A step ran out of retries: apology in the thread, alert with `job_id` in `#lead-research-alerts` | [jobs.py](leadbot/jobs.py) |
 
@@ -54,12 +54,16 @@ because the AE needs that more than the research.
 
 ### Who decides what
 
-Claude writes words. Code decides everything else.
+The model writes words. Code decides everything else.
 
 - **Suppression** is four plain functions in [suppression.py](leadbot/suppression.py): do-not-contact, open deal,
   existing customer, contacted in the last 30 days. First match wins. Adding a rule is one function and one test.
-- **Claude only sees a fact sheet** built by [facts.py](leadbot/facts.py) from the cache and HubSpot. The verdict
+- **The model only sees a fact sheet** built by [facts.py](leadbot/facts.py) from the cache and HubSpot. The verdict
   is already in it.
+- **The model is a setting.** [brief.py](leadbot/brief.py) has two providers behind one interface: any
+  OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter) through `LLM_API_KEY` and `LLM_MODEL`, or Claude through
+  `ANTHROPIC_API_KEY`. The checker and the template fallback are the same for both, so the choice of model
+  changes the wording of a brief and never its facts.
 - **The fact checker** rejects a brief if any number, capitalised name or date is not in the fact sheet, if the
   model changed the verdict, or if it runs over 120 words. A rejected brief is replaced by a template built from
   the same facts, and the reason is stored in `briefs.fallback_reason`.
@@ -69,8 +73,10 @@ Claude writes words. Code decides everything else.
 Fill this in from your own runs. The audit table makes each one a query:
 
 ```sql
--- cost per lookup (claude-sonnet-5-5: $2 per million input tokens, $10 per million output tokens)
-select round(avg(input_tokens * 2 + output_tokens * 10) / 1e6, 5) as usd_per_brief from briefs where source = 'claude';
+-- tokens per model-written brief; multiply by your model's prices for cost per lookup
+-- (a free NIM model costs nothing; claude-sonnet-5-5 is $2 per million input tokens and $10 per million output)
+select model, round(avg(input_tokens)) as input_tokens, round(avg(output_tokens)) as output_tokens
+from briefs where source <> 'template' group by model;
 
 -- cache hit rate, checker pass rate
 select
@@ -98,11 +104,12 @@ from research_jobs j join briefs b on b.job_id = j.id where j.status = 'done' gr
 | Slack resends an event (no 200 within 3 s) | Handler only verifies, inserts and returns; work runs in the background. Unique `slack_event_id` drops the copy | `test_slack_resend_of_the_same_event_creates_one_job` |
 | Forged or replayed webhook | Slack: HMAC signature and a 5-minute timestamp window. Clay: shared-secret header. Both answer 401 | `test_forged_slack_request_is_rejected`, `test_replayed_...`, `test_clay_callback_with_a_wrong_secret_is_rejected` |
 | HubSpot or Slack rate limit (429), server error (5xx) | One shared client ([http.py](leadbot/http.py)): waits for `Retry-After`, else exponential backoff with jitter, 4 tries | `test_hubspot_rate_limit_is_retried_after_the_given_wait` |
-| Claude rate limit (429) or overload (529) | The Anthropic SDK applies the same policy (4 tries, 60 s timeout); if it still fails, the template brief goes out | `test_a_claude_outage_falls_back_to_the_template` |
-| Slow or hung API | A timeout on every call: 10 s for Slack, Clay and HubSpot, 60 s for Claude | `test_a_timeout_is_retried` |
+| Model rate limit (429) or overload | NIM-style endpoints go through the shared client; Claude through the Anthropic SDK, which applies the same policy (4 tries, 60 s timeout). If it still fails, the template brief goes out | `test_rate_limited_model_is_retried_by_the_shared_client`, `test_a_claude_outage_falls_back_to_the_template` |
+| Slow or hung API | A timeout on every call: 10 s for Slack, Clay and HubSpot, 60 s for the model | `test_a_timeout_is_retried` |
 | Clay never calls back | The sweeper (`POST /internal/sweep`, every 5 minutes from GitHub Actions) fails jobs stuck in `enriching` for over 10 minutes | `test_clay_that_never_calls_back_is_timed_out_by_the_sweeper` |
 | Clay calls back late | The data is still cached, so the next request for that person costs nothing | `test_late_clay_callback_is_still_cached` |
-| Claude invents a fact or changes the verdict | Checker rejects it; template brief instead; `fallback_reason` stored | `test_invented_facts_are_rejected...`, `test_the_model_cannot_change_the_verdict` |
+| The model invents a fact or changes the verdict | Checker rejects it; template brief instead; `fallback_reason` stored | `test_invented_facts_are_rejected...`, `test_the_model_cannot_change_the_verdict` |
+| The model returns prose, code fences or no JSON | The JSON object is extracted if there is one; otherwise the template brief goes out | `test_json_wrapped_in_code_fences_and_prose_is_still_read`, `test_an_unusable_reply_falls_back_to_the_template` |
 | Process restarts mid-job | On startup, unfinished jobs resume from their last status. Status changes are compare-and-set, writes are upserts | `test_a_restarted_process_resumes_a_job_from_its_last_status` |
 | Restart between Slack post and HubSpot write | `briefs.slack_ts` and `briefs.hubspot_note_id` record each half, so the finished half is not repeated | `test_a_resumed_delivery_does_not_post_the_brief_twice` |
 | A step keeps failing | `failed` status, apology in the thread, alert with `job_id` and error | `test_a_step_that_keeps_failing_fails_loudly` |
@@ -115,13 +122,13 @@ from research_jobs j join briefs b on b.job_id = j.id where j.status = 'done' gr
 {"ts": "...", "level": "INFO", "logger": "leadbot.http", "msg": "api call", "job_id": "ab461d7b-...", "step": "check_crm", "service": "hubspot", "endpoint": "/crm/v3/objects/contacts/search", "attempt": 1, "status_code": 200, "duration_ms": 87}
 ```
 
-**Tests.** 86 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
+**Tests.** 96 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
 clients, retries and parsers are exercised. The data-layer tests run twice: against the in-memory store, and in
 CI against a real Postgres container.
 
 **At 10x volume** the first limit is Clay credits, then HubSpot's rate limit. The cache handles the first (and
 two requests for the same person while Clay is working share one Clay call). `MAX_CONCURRENT_JOBS` caps how many
-jobs call HubSpot and Claude at once, which handles the second.
+jobs call HubSpot and the model at once, which handles the second.
 
 ## Design choices and trade-offs
 
@@ -132,14 +139,17 @@ jobs call HubSpot and Claude at once, which handles the second.
 - **Delivery is at-least-once.** A crash between an API call and saving its marker can repeat that one call
   (a second Slack message or HubSpot note). Exactly-once would need idempotency keys that Slack and HubSpot notes
   do not offer.
-- **Structured output instead of a forced tool call.** The plan was `tool_choice` on a `write_brief` tool.
+- **On Claude: structured output instead of a forced tool call.** The plan was `tool_choice` on a `write_brief` tool.
   `claude-sonnet-5-5` rejects forced tool choice, so the brief schema is passed as `output_config.format`, which
   gives the same guarantee: the reply is valid JSON for the schema.
-- **`CLAUDE_EFFORT` instead of temperature.** The same model rejects a custom temperature. Effort is the supported
+- **On Claude: `CLAUDE_EFFORT` instead of temperature.** The same model rejects a custom temperature. Effort is the supported
   dial, and `CLAUDE_MODEL=claude-haiku-5-5` switches models for cost tests without a code change.
-- **Prompt caching is marked but not active yet.** The system prompt carries `cache_control`, but Claude only
+- **On Claude: prompt caching is marked but not active yet.** The system prompt carries `cache_control`, but Claude only
   caches prefixes of at least 512 tokens on this model and the prompt is shorter. It turns on by itself if the
   prompt grows. `briefs.cache_read_tokens` shows whether it is working.
+- **On NIM-style endpoints the JSON shape is requested, not enforced.** The prompt spells out the keys and asks
+  for JSON mode; if the model rejects JSON mode the call is repeated without it. The checker verifies the shape
+  either way, so a model that ignores the format costs a template brief, nothing more.
 - **The checker is strict on purpose.** A wrongly rejected brief costs nothing (the template goes out). A wrongly
   accepted one puts an invented fact in front of an AE. The pass rate is the number to watch; to loosen it, add
   ordinary words to `COMMON_WORDS` in [check.py](leadbot/check.py).
@@ -182,7 +192,8 @@ uv run python scripts/send_mention.py https://www.linkedin.com/in/jane-doe      
 uv run python scripts/send_mention.py https://www.linkedin.com/in/omar-haddad   # open deal: hold, with the reason
 ```
 
-Without `ANTHROPIC_API_KEY` every brief comes from the template. Set the key in `.env` to have Claude write them.
+With no model key every brief comes from the template. To have a model write them, set `LLM_API_KEY` and
+`LLM_MODEL` in `.env` (NVIDIA NIM by default; a key is free at build.nvidia.com), or `ANTHROPIC_API_KEY` for Claude.
 Without `DATABASE_URL` the store is in memory; set it to a Postgres URL and run
 [migrations/001_init.sql](migrations/001_init.sql) to keep state.
 
@@ -218,7 +229,7 @@ flowchart LR
     subgraph decide["Decisions and brief"]
         suppression["suppression.py<br/>reach out or hold"]
         facts["facts.py<br/>fact sheet"]
-        brief["brief.py<br/>Claude call and template"]
+        brief["brief.py<br/>model call and template"]
         check["check.py<br/>fact checker"]
     end
     subgraph integrations["Integrations"]

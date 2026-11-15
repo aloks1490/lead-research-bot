@@ -17,7 +17,7 @@ import httpx
 import pytest
 import respx
 
-from leadbot.brief import Briefer
+from leadbot.brief import Briefer, ClaudeWriter
 from leadbot.config import Settings
 from leadbot.http import HttpClient
 from leadbot.main import build_runner, create_app
@@ -168,8 +168,8 @@ class World:
             self.sleeps.append(seconds)
 
         http = HttpClient(self.http_client, sleep=no_sleep, rng=lambda: 1.0)
-        briefer = Briefer(self.claude, self.settings.claude_model, self.settings.claude_max_tokens,
-                          self.settings.claude_effort)
+        briefer = Briefer(ClaudeWriter(self.claude, self.settings.claude_model, self.settings.claude_max_tokens,
+                                       self.settings.claude_effort))
         return build_runner(self.settings, self.store, http, briefer, now=lambda: self.now)
 
     def _slack(self, request: httpx.Request) -> httpx.Response:

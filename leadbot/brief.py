@@ -1,18 +1,25 @@
-"""Brief generation. Claude writes the words; code decides everything else.
+"""Brief generation. A model writes the words; code decides everything else.
 
-Flow: fact sheet -> Claude (JSON constrained to BRIEF_SCHEMA) -> fact checker -> brief.
+Flow: fact sheet -> model -> fact checker -> brief.
 If there is no API key, the call fails, the model declines, or the checker rejects the output, the brief is
 built from a template instead and the reason is stored as `fallback_reason`. A model problem never blocks an AE.
+
+Two model providers, chosen by which key is set (see Briefer.from_settings):
+  - OpenAICompatWriter: any OpenAI-compatible chat endpoint, for example NVIDIA NIM or OpenRouter
+  - ClaudeWriter: the Anthropic API, with the reply constrained to BRIEF_SCHEMA
+Both give the Briefer a draft; the same checker and the same template fallback apply to both.
 """
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 import anthropic
 
 from leadbot.check import check
+from leadbot.http import ApiError, HttpClient
 
 log = logging.getLogger("leadbot.brief")
 
@@ -57,7 +64,7 @@ BRIEF_SCHEMA = {
 @dataclass
 class BriefResult:
     brief: dict
-    source: str                 # "claude" or "template"
+    source: str                 # "claude", "llm" (OpenAI-compatible endpoint) or "template"
     model: str | None
     check_passed: bool | None   # None when the model was never called
     fallback_reason: str | None
@@ -98,71 +105,180 @@ def template_brief(facts: dict) -> dict:
 
 # ---------- the model call ----------
 
-class Briefer:
-    def __init__(self, client: anthropic.AsyncAnthropic | None, model: str, max_tokens: int = 2000,
-                 effort: str = "low"):
+class ModelError(Exception):
+    """The model call failed or returned nothing usable. The message is stored as `fallback_reason`."""
+
+    def __init__(self, reason: str, usage: dict | None = None):
+        super().__init__(reason)
+        self.usage = usage or {}
+
+
+@dataclass
+class Draft:
+    """What a model wrote, before the checker has looked at it."""
+    out: dict
+    usage: dict = field(default_factory=dict)  # input_tokens, output_tokens, cache_read_tokens
+
+
+class ClaudeWriter:
+    source = "claude"
+
+    def __init__(self, client: anthropic.AsyncAnthropic, model: str, max_tokens: int = 2000, effort: str = "low"):
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
         self.effort = effort
 
-    @classmethod
-    def from_settings(cls, settings) -> Briefer:
-        client = None
-        if settings.anthropic_api_key:
-            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=TIMEOUT_SECONDS,
-                                              max_retries=MAX_RETRIES)
-        return cls(client, settings.claude_model, settings.claude_max_tokens, settings.claude_effort)
-
-    async def write(self, facts: dict) -> BriefResult:
-        if self.client is None:
-            return self._fallback(facts, "no Claude API key configured", check_passed=None)
+    async def draft(self, facts: dict) -> Draft:
         try:
-            response = await self._call(facts)
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                # The system prompt is identical on every call, so it is marked for prompt caching. Note: Claude
+                # only caches a prefix of at least 512 tokens on this model. This prompt is shorter, so today the
+                # marker does nothing. It starts paying off, with no code change, once the prompt grows past that.
+                system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                # sort_keys keeps the request byte-stable for the same facts.
+                messages=[{"role": "user", "content": json.dumps(facts, sort_keys=True, ensure_ascii=False)}],
+                # Structured output: the reply is guaranteed to be JSON that matches BRIEF_SCHEMA. (A forced tool
+                # call would do the same on older models; claude-sonnet-5-5 rejects forced tool_choice.)
+                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": BRIEF_SCHEMA}},
+            )
         # Most specific first. Every branch ends in the template: the AE still gets a brief.
         except anthropic.RateLimitError as e:
-            return self._fallback(facts, f"claude rate limit after retries: {e.message}", check_passed=None)
+            raise ModelError(f"claude rate limit after retries: {e.message}") from e
         except anthropic.APIStatusError as e:
-            return self._fallback(facts, f"claude api error {e.status_code}: {e.message}", check_passed=None)
+            raise ModelError(f"claude api error {e.status_code}: {e.message}") from e
         except anthropic.APIConnectionError as e:  # includes timeouts
-            return self._fallback(facts, f"claude connection error: {type(e).__name__}", check_passed=None)
+            raise ModelError(f"claude connection error: {type(e).__name__}") from e
 
         usage = {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens,
                  "cache_read_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0}
         # A response is not always an answer: check why the model stopped before reading the content.
         if response.stop_reason == "refusal":
-            return self._fallback(facts, "claude declined the request", check_passed=None, **usage)
+            raise ModelError("claude declined the request", usage)
         if response.stop_reason == "max_tokens":
-            return self._fallback(facts, "claude output cut off at max_tokens", check_passed=None, **usage)
+            raise ModelError("claude output cut off at max_tokens", usage)
         try:
             text = next(block.text for block in response.content if block.type == "text")
-            out = json.loads(text)
+            return Draft(json.loads(text), usage)
         except (StopIteration, json.JSONDecodeError) as e:
-            return self._fallback(facts, f"claude returned no valid JSON: {type(e).__name__}", check_passed=None,
-                                  **usage)
+            raise ModelError(f"claude returned no valid JSON: {type(e).__name__}", usage) from e
 
-        problems = check(out, facts)
+
+# These endpoints cannot be held to a schema, so the shape is spelled out in the prompt and verified by the checker.
+JSON_INSTRUCTIONS = """
+
+Return one JSON object and nothing else, with exactly these keys:
+  "verdict": "reach_out" or "hold"
+  "hold_reason": string
+  "headline": string
+  "person": string
+  "company": string
+  "angle": string
+  "questions": a list of exactly two strings"""
+
+
+def parse_json_reply(text: str) -> dict:
+    """The JSON object in a reply that may carry code fences or stray prose around it."""
+    text = re.sub(r"```(?:json)?", "", text)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("no JSON object in reply")
+    out = json.loads(text[start:end + 1])
+    if not isinstance(out, dict):
+        raise ValueError("reply is not a JSON object")
+    return out
+
+
+class OpenAICompatWriter:
+    """Any endpoint that speaks the OpenAI chat-completions format (NVIDIA NIM, OpenRouter, ...).
+    Calls go through the shared HttpClient, so they get the same timeout, retries and logging as HubSpot."""
+    source = "llm"
+
+    def __init__(self, http: HttpClient, base_url: str, api_key: str, model: str, max_tokens: int = 2000,
+                 extra_body: dict | None = None):
+        self.http = http
+        self.url = base_url.rstrip("/") + "/chat/completions"
+        self.headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        self.model = model
+        self.max_tokens = max_tokens
+        self.extra_body = extra_body or {}
+
+    async def _post(self, body: dict):
+        return await self.http.request("llm", "POST", self.url, endpoint="chat/completions", timeout=TIMEOUT_SECONDS,
+                                       json=body, headers=self.headers)
+
+    async def draft(self, facts: dict) -> Draft:
+        body = {
+            "model": self.model,
+            "temperature": 0.2,
+            "max_tokens": self.max_tokens,
+            "messages": [{"role": "system", "content": SYSTEM + JSON_INSTRUCTIONS},
+                         {"role": "user", "content": json.dumps(facts, sort_keys=True, ensure_ascii=False)}],
+            **self.extra_body,
+        }
+        try:
+            try:
+                response = await self._post({**body, "response_format": {"type": "json_object"}})
+            except ApiError as e:
+                if e.status != 400:
+                    raise
+                response = await self._post(body)  # some models reject JSON mode: ask again without it
+        except ApiError as e:
+            raise ModelError(f"llm api error {e.status or 'network'}: {e.detail[:200]}") from e
+
+        data = response.json()
+        reported = data.get("usage") or {}
+        usage = {"input_tokens": reported.get("prompt_tokens") or 0,
+                 "output_tokens": reported.get("completion_tokens") or 0, "cache_read_tokens": 0}
+        choice = (data.get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content")
+        if not content:
+            # A reasoning model can spend the whole token budget thinking and return no answer.
+            raise ModelError(f"llm returned no content (finish_reason={choice.get('finish_reason')})", usage)
+        try:
+            return Draft(parse_json_reply(content), usage)
+        except ValueError as e:  # includes json.JSONDecodeError
+            raise ModelError(f"llm returned no valid JSON: {e}", usage) from e
+
+
+class Briefer:
+    def __init__(self, writer: ClaudeWriter | OpenAICompatWriter | None):
+        self.writer = writer
+
+    @property
+    def model(self) -> str | None:
+        return self.writer.model if self.writer else None
+
+    @classmethod
+    def from_settings(cls, settings, http: HttpClient) -> Briefer:
+        """LLM_API_KEY + LLM_MODEL select the OpenAI-compatible endpoint. Otherwise ANTHROPIC_API_KEY selects
+        Claude. With neither, every brief comes from the template."""
+        if settings.llm_api_key and settings.llm_model:
+            extra = json.loads(settings.llm_extra_body) if settings.llm_extra_body.strip() else None
+            return cls(OpenAICompatWriter(http, settings.llm_base_url, settings.llm_api_key, settings.llm_model,
+                                          settings.llm_max_tokens, extra))
+        if settings.anthropic_api_key:
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=TIMEOUT_SECONDS,
+                                              max_retries=MAX_RETRIES)
+            return cls(ClaudeWriter(client, settings.claude_model, settings.claude_max_tokens,
+                                    settings.claude_effort))
+        return cls(None)
+
+    async def write(self, facts: dict) -> BriefResult:
+        if self.writer is None:
+            return self._fallback(facts, "no model API key configured", check_passed=None)
+        try:
+            draft = await self.writer.draft(facts)
+        except ModelError as e:
+            return self._fallback(facts, str(e), check_passed=None, **e.usage)
+        problems = check(draft.out, facts)
         if problems:
             log.warning("brief rejected by checker", extra={"problems": problems})
-            return self._fallback(facts, "checker: " + "; ".join(problems), check_passed=False, **usage)
-        return BriefResult(out, "claude", self.model, True, None, **usage)
-
-    async def _call(self, facts: dict):
-        return await self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            # The system prompt is identical on every call, so it is marked for prompt caching. Note: Claude
-            # only caches a prefix of at least 512 tokens on this model. This prompt is shorter, so today the
-            # marker does nothing. It starts paying off, with no code change, once the prompt grows past that.
-            system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            # sort_keys keeps the request byte-stable for the same facts.
-            messages=[{"role": "user", "content": json.dumps(facts, sort_keys=True, ensure_ascii=False)}],
-            # Structured output: the reply is guaranteed to be JSON that matches BRIEF_SCHEMA.
-            # (A forced tool call would do the same on older models; claude-sonnet-5-5 rejects forced tool_choice.)
-            output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": BRIEF_SCHEMA}},
-        )
+            return self._fallback(facts, "checker: " + "; ".join(problems), check_passed=False, **draft.usage)
+        return BriefResult(draft.out, self.writer.source, self.model, True, None, **draft.usage)
 
     def _fallback(self, facts: dict, reason: str, *, check_passed: bool | None, **usage) -> BriefResult:
         log.info("using template brief", extra={"fallback_reason": reason})
-        return BriefResult(template_brief(facts), "template", self.model if self.client else None, check_passed,
-                           reason, **usage)
+        return BriefResult(template_brief(facts), "template", self.model, check_passed, reason, **usage)

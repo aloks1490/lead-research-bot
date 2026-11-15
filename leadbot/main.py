@@ -37,7 +37,7 @@ def build_runner(settings: Settings, store: Store, http: HttpClient, briefer: Br
         clay=Clay(http, settings.clay_webhook_url, settings.clay_webhook_token),
         hubspot=HubSpot(http, settings.hubspot_token, settings.hubspot_base_url, settings.hubspot_dnc_property,
                         settings.hubspot_linkedin_property),
-        briefer=briefer or Briefer.from_settings(settings),
+        briefer=briefer or Briefer.from_settings(settings, http),
         **deps,
     ))
 
@@ -62,7 +62,8 @@ def create_app(settings: Settings | None = None, runner: Runner | None = None) -
         async with httpx.AsyncClient() as client:
             app.state.runner = build_runner(settings, store, HttpClient(client))
             resumed = await app.state.runner.resume_interrupted()  # jobs a restart left mid-way
-            log.info("service started", extra={"jobs_resumed": resumed, "model": settings.claude_model})
+            log.info("service started", extra={"jobs_resumed": resumed,
+                                              "model": app.state.runner.d.briefer.model or "none (template only)"})
             yield
             await app.state.runner.drain()
         await store.close()

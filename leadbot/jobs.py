@@ -79,7 +79,7 @@ class Runner:
             await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
     async def _guarded(self, job_id: str) -> None:
-        async with self._limit:  # the concurrency cap: at most N jobs call HubSpot and Claude at once
+        async with self._limit:  # the concurrency cap: at most N jobs call HubSpot and the model at once
             await self.run(job_id)
 
     # ---------- the loop ----------
@@ -187,7 +187,7 @@ class Runner:
         record = await self.d.store.get_brief(job.id)
         brief, suppression = record.brief, record.suppression
         if not record.slack_ts:
-            written_by = record.model if record.source == "claude" else "template"
+            written_by = "template" if record.source == "template" else record.model
             footer = f"cache {suppression['cache']} · written by {written_by} · job `{job.id}`"
             ts = await self.d.slack.post(job.channel, slack_ui.brief_text(brief), thread_ts=job.thread_ts,
                                          blocks=slack_ui.brief_blocks(brief, footer))

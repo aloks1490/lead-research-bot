@@ -24,8 +24,16 @@ class Settings(BaseSettings):
     hubspot_dnc_property: str = "hs_email_optout"  # the contact property that means "do not contact"
     hubspot_linkedin_property: str = "hs_linkedin_url"  # written on new contacts; empty string to skip
 
-    # Claude
-    anthropic_api_key: str = ""  # empty = no model call, every brief comes from the template
+    # Model provider 1: any OpenAI-compatible chat endpoint (NVIDIA NIM, OpenRouter, ...).
+    # Used when LLM_API_KEY and LLM_MODEL are both set; it then takes priority over Claude.
+    llm_base_url: str = "https://integrate.api.nvidia.com/v1"
+    llm_api_key: str = ""
+    llm_model: str = ""  # the provider's model id, copied from its catalog
+    llm_max_tokens: int = 2000  # reasoning models spend part of this thinking before they answer
+    llm_extra_body: str = ""  # optional JSON merged into each request, for model-specific switches
+
+    # Model provider 2: Claude. With no key for either provider, every brief comes from the template.
+    anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-5-5"
     claude_max_tokens: int = 2000  # covers the model's thinking plus a ~120-word brief
     claude_effort: str = "low"  # low | medium | high. Sonnet 5.5 rejects a custom temperature; effort is the dial.
@@ -36,7 +44,7 @@ class Settings(BaseSettings):
     # Behaviour
     cache_ttl_days: int = 30
     recent_contact_days: int = 30
-    max_concurrent_jobs: int = 5  # caps parallel HubSpot and Claude calls at 10x volume
+    max_concurrent_jobs: int = 5  # caps parallel HubSpot and model calls at 10x volume
     enrich_timeout_minutes: int = 10
     stuck_job_minutes: int = 5
     max_attempts: int = 5  # runs per job. A normal cache-miss job uses 2: one up to Clay, one after the callback.

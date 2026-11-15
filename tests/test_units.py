@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from datetime import date
 
 import anthropic
@@ -10,7 +11,7 @@ import httpx
 import httpx2
 import pytest
 
-from leadbot.brief import Briefer, template_brief
+from leadbot.brief import Briefer, ClaudeWriter, OpenAICompatWriter, template_brief
 from leadbot.check import check
 from leadbot.clay import ClayCallback
 from leadbot.facts import tenure
@@ -266,15 +267,15 @@ def test_the_template_brief_always_passes_the_checker():
 # ---------- the Claude wrapper ----------
 
 async def test_without_an_api_key_the_template_is_used():
-    result = await Briefer(None, "claude-sonnet-5-5").write(FACTS)
+    result = await Briefer(None).write(FACTS)
     assert (result.source, result.check_passed, result.model) == ("template", None, None)
-    assert "no Claude API key" in result.fallback_reason
+    assert "no model API key" in result.fallback_reason
 
 
 async def test_a_refusal_falls_back_to_the_template():
     claude = FakeClaude()
     claude.stop_reason = "refusal"
-    result = await Briefer(claude, "claude-sonnet-5-5").write(FACTS)
+    result = await Briefer(ClaudeWriter(claude, "claude-sonnet-5-5")).write(FACTS)
     assert result.source == "template" and "declined" in result.fallback_reason
     assert result.input_tokens == 420  # tokens are still recorded: the call was paid for
 
@@ -282,13 +283,95 @@ async def test_a_refusal_falls_back_to_the_template():
 async def test_a_claude_outage_falls_back_to_the_template():
     claude = FakeClaude()
     claude.error = anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com"))
-    result = await Briefer(claude, "claude-sonnet-5-5").write(FACTS)
+    result = await Briefer(ClaudeWriter(claude, "claude-sonnet-5-5")).write(FACTS)
     assert result.source == "template" and "connection error" in result.fallback_reason
 
 
 async def test_a_good_reply_is_accepted():
     claude = FakeClaude()
     claude.reply = lambda facts: GOOD
-    result = await Briefer(claude, "claude-sonnet-5-5").write(FACTS)
+    result = await Briefer(ClaudeWriter(claude, "claude-sonnet-5-5")).write(FACTS)
     assert (result.source, result.check_passed, result.fallback_reason) == ("claude", True, None)
     assert result.brief == GOOD
+
+
+# ---------- the OpenAI-compatible wrapper (NVIDIA NIM, OpenRouter, ...) ----------
+
+def chat_reply(content, **usage) -> httpx.Response:
+    return httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                                     "usage": usage or {"prompt_tokens": 500, "completion_tokens": 120}})
+
+
+def nim_briefer(responses: list):
+    http, calls, sleeps = make_http(responses)
+    writer = OpenAICompatWriter(http, "https://nim.test/v1/", "nvapi-test", "some/model",
+                                extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+    return Briefer(writer), calls, sleeps
+
+
+async def test_openai_compatible_reply_is_checked_and_accepted():
+    briefer, calls, _ = nim_briefer([chat_reply(json.dumps(GOOD))])
+    result = await briefer.write(FACTS)
+
+    assert (result.source, result.model, result.check_passed) == ("llm", "some/model", True)
+    assert (result.input_tokens, result.output_tokens) == (500, 120)
+    request = calls[0]
+    body = json.loads(request.content)
+    assert str(request.url) == "https://nim.test/v1/chat/completions"
+    assert request.headers["Authorization"] == "Bearer nvapi-test"
+    assert body["model"] == "some/model" and body["response_format"] == {"type": "json_object"}
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}  # LLM_EXTRA_BODY is merged in
+    assert json.loads(body["messages"][1]["content"]) == FACTS         # the model sees the fact sheet, nothing else
+    assert '"questions"' in body["messages"][0]["content"]             # the JSON shape is spelled out in the prompt
+
+
+async def test_json_wrapped_in_code_fences_and_prose_is_still_read():
+    wrapped = "Here is the brief:\n```json\n" + json.dumps(GOOD) + "\n```\nHope that helps."
+    briefer, _, _ = nim_briefer([chat_reply(wrapped)])
+    assert (await briefer.write(FACTS)).source == "llm"
+
+
+async def test_a_model_without_json_mode_is_asked_again_without_it():
+    briefer, calls, _ = nim_briefer([httpx.Response(400, text="response_format not supported"),
+                                     chat_reply(json.dumps(GOOD))])
+    result = await briefer.write(FACTS)
+    assert result.source == "llm" and len(calls) == 2
+    assert "response_format" not in json.loads(calls[1].content)
+
+
+async def test_openai_compatible_output_goes_through_the_same_checker():
+    invented = {**GOOD, "angle": "Congratulate them on the Series B."}
+    briefer, _, _ = nim_briefer([chat_reply(json.dumps(invented))])
+    result = await briefer.write(FACTS)
+    assert (result.source, result.check_passed) == ("template", False)
+    assert "Series" in result.fallback_reason and result.input_tokens == 500
+
+
+@pytest.mark.parametrize("reply,reason", [
+    (chat_reply("I cannot help with that."), "no valid JSON"),
+    (chat_reply(""), "no content"),
+    (chat_reply("[1, 2]"), "no valid JSON"),
+    (httpx.Response(401, text="bad key"), "llm api error 401"),
+])
+async def test_an_unusable_reply_falls_back_to_the_template(reply, reason):
+    briefer, _, _ = nim_briefer([reply])
+    result = await briefer.write(FACTS)
+    assert result.source == "template" and reason in result.fallback_reason and result.check_passed is None
+
+
+async def test_rate_limited_model_is_retried_by_the_shared_client():
+    briefer, calls, sleeps = nim_briefer([httpx.Response(429, headers={"Retry-After": "1"}),
+                                          chat_reply(json.dumps(GOOD))])
+    assert (await briefer.write(FACTS)).source == "llm"
+    assert len(calls) == 2 and sleeps == [1.0]
+
+
+def test_provider_is_chosen_by_which_key_is_set():
+    from leadbot.config import Settings
+    http, _, _ = make_http([])
+    pick = lambda **kw: Briefer.from_settings(Settings(_env_file=None, **kw), http).writer  # noqa: E731
+    assert pick() is None
+    assert isinstance(pick(anthropic_api_key="k"), ClaudeWriter)
+    assert isinstance(pick(llm_api_key="k", llm_model="m"), OpenAICompatWriter)
+    assert isinstance(pick(llm_api_key="k", llm_model="m", anthropic_api_key="k"), OpenAICompatWriter)
+    assert isinstance(pick(llm_api_key="k", anthropic_api_key="k"), ClaudeWriter)  # no model id: not usable
