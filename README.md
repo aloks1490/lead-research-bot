@@ -205,16 +205,58 @@ Without `DATABASE_URL` the store is in memory; set it to a Postgres URL and run
 
 ## Layout
 
+```mermaid
+flowchart LR
+    subgraph web["Web service"]
+        main["main.py<br/>/slack/events, /webhooks/clay, /internal/sweep"]
+        security["security.py<br/>webhook verification"]
+    end
+    subgraph runner["Job runner"]
+        jobs["jobs.py<br/>status machine, failures, sweeper"]
+        urls["urls.py<br/>LinkedIn URL normalising"]
+    end
+    subgraph decide["Decisions and brief"]
+        suppression["suppression.py<br/>reach out or hold"]
+        facts["facts.py<br/>fact sheet"]
+        brief["brief.py<br/>Claude call and template"]
+        check["check.py<br/>fact checker"]
+    end
+    subgraph integrations["Integrations"]
+        slack["slack.py"]
+        clay["clay.py"]
+        hubspot["hubspot.py"]
+        http["http.py<br/>shared retry client"]
+    end
+    subgraph data["Data layer (store folder)"]
+        store["Store interface<br/>and row models"]
+        postgres["postgres.py<br/>Supabase"]
+        memory["memory.py<br/>tests and local demo"]
+    end
+    main --> security
+    main --> jobs
+    jobs --> urls
+    jobs --> suppression
+    jobs --> facts
+    jobs --> brief
+    brief --> check
+    jobs --> slack
+    jobs --> clay
+    jobs --> hubspot
+    slack --> http
+    clay --> http
+    hubspot --> http
+    jobs --> store
+    store --> postgres
+    store --> memory
 ```
-leadbot/
-  main.py         web service: /slack/events, /webhooks/clay, /internal/sweep
-  jobs.py         the status machine, failure handling, sweeper
-  http.py         shared retry client          security.py   webhook verification
-  slack.py  clay.py  hubspot.py                the three integrations
-  suppression.py  reach out or hold (code)     facts.py      the fact sheet
-  brief.py        Claude call + template       check.py      the fact checker
-  store/          Store interface, Postgres and in-memory implementations
-migrations/       the schema
-tests/            pipeline tests, unit tests, store contract tests
-scripts/          local stand-ins for the outside services
-```
+
+An arrow means "uses". Everything in the diagram lives in `leadbot/`. `config.py` (settings) and `logs.py`
+(JSON logging) are used throughout and left out to keep it readable.
+
+| Folder | Contents |
+| --- | --- |
+| [leadbot/](leadbot) | The service (the diagram above) |
+| [migrations/](migrations) | The database schema |
+| [tests/](tests) | Pipeline tests, unit tests, store contract tests |
+| [scripts/](scripts) | Local stand-ins for Slack, Clay and HubSpot, and a sender for signed test events |
+| [docs/](docs) | Clay table setup |
