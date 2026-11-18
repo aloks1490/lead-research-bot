@@ -18,6 +18,7 @@ from leadbot.facts import tenure
 from leadbot.http import ApiError, HttpClient
 from leadbot.hubspot import CrmState, OpenDeal
 from leadbot.security import secrets_match, verify_slack_signature
+from leadbot.skill import load as load_skill
 from leadbot.suppression import Context, evaluate
 from leadbot.urls import extract_url, normalise_linkedin_url
 from tests.conftest import FakeClaude
@@ -325,10 +326,14 @@ async def test_openai_compatible_reply_is_checked_and_accepted():
     body = json.loads(request.content)
     assert str(request.url) == "https://nim.test/v1/chat/completions"
     assert request.headers["Authorization"] == "Bearer nvapi-test"
-    assert body["model"] == "some/model" and body["response_format"] == {"type": "json_object"}
+    assert body["model"] == "some/model"
+    assert body["response_format"] == {"type": "json_schema", "json_schema": {  # the endpoint enforces the schema
+        "name": "brief", "schema": load_skill().schema, "strict": True}}
     assert body["chat_template_kwargs"] == {"enable_thinking": False}  # LLM_EXTRA_BODY is merged in
-    assert json.loads(body["messages"][1]["content"]) == FACTS         # the model sees the fact sheet, nothing else
-    assert '"questions"' in body["messages"][0]["content"]             # the JSON shape is spelled out in the prompt
+    assert json.loads(body["messages"][-1]["content"]) == FACTS        # the real fact sheet comes last
+    assert body["messages"][0] == {"role": "system", "content": load_skill().system}
+    assert [m["role"] for m in body["messages"][1:-1]] == ["user", "assistant"] * len(load_skill().examples)
+    assert result.prompt_version == load_skill().prompt_version
 
 
 async def test_json_wrapped_in_code_fences_and_prose_is_still_read():
@@ -337,12 +342,27 @@ async def test_json_wrapped_in_code_fences_and_prose_is_still_read():
     assert (await briefer.write(FACTS)).source == "llm"
 
 
-async def test_a_model_without_json_mode_is_asked_again_without_it():
-    briefer, calls, _ = nim_briefer([httpx.Response(400, text="response_format not supported"),
+async def test_a_model_without_schema_mode_steps_down_to_json_mode():
+    briefer, calls, _ = nim_briefer([httpx.Response(400, text="json_schema not supported"),
                                      chat_reply(json.dumps(GOOD))])
     result = await briefer.write(FACTS)
     assert result.source == "llm" and len(calls) == 2
-    assert "response_format" not in json.loads(calls[1].content)
+    assert json.loads(calls[1].content)["response_format"] == {"type": "json_object"}
+
+
+async def test_a_model_without_any_json_mode_is_asked_with_the_prompt_alone():
+    rejected = httpx.Response(400, text="response_format not supported")
+    briefer, calls, _ = nim_briefer([rejected, rejected, chat_reply(json.dumps(GOOD))])
+    result = await briefer.write(FACTS)
+    assert result.source == "llm" and len(calls) == 3
+    assert "response_format" not in json.loads(calls[2].content)
+
+
+async def test_a_400_in_every_mode_falls_back_to_the_template():
+    rejected = httpx.Response(400, text="bad request")
+    briefer, calls, _ = nim_briefer([rejected, rejected, rejected])
+    result = await briefer.write(FACTS)
+    assert result.source == "template" and "llm api error 400" in result.fallback_reason and len(calls) == 3
 
 
 async def test_openai_compatible_output_goes_through_the_same_checker():

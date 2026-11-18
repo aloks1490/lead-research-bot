@@ -68,7 +68,7 @@ class FakeClaude:
         self.calls.append(kwargs)
         if self.error:
             raise self.error
-        facts = json.loads(kwargs["messages"][0]["content"])
+        facts = json.loads(kwargs["messages"][-1]["content"])  # the real fact sheet comes after the examples
         content = [SimpleNamespace(type="thinking", thinking=""),
                    SimpleNamespace(type="text", text=json.dumps(self.reply(facts)))]
         return SimpleNamespace(stop_reason=self.stop_reason, content=content,

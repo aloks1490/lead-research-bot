@@ -6,8 +6,12 @@ built from a template instead and the reason is stored as `fallback_reason`. A m
 
 Two model providers, chosen by which key is set (see Briefer.from_settings):
   - OpenAICompatWriter: any OpenAI-compatible chat endpoint, for example NVIDIA NIM or OpenRouter
-  - ClaudeWriter: the Anthropic API, with the reply constrained to BRIEF_SCHEMA
+  - ClaudeWriter: the Anthropic API, with the reply constrained to the skill's schema
 Both give the Briefer a draft; the same checker and the same template fallback apply to both.
+
+What the model is told (rules, output schema, worked examples) is not in this file: it lives in the skill file
+leadbot/prompts/brief.md, loaded by leadbot/skill.py. Every answer is validated against that file's schema, then
+fact-checked.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from dataclasses import dataclass, field
 
 import anthropic
 
+from leadbot import skill as skills
 from leadbot.check import check
 from leadbot.http import ApiError, HttpClient
 
@@ -26,40 +31,6 @@ log = logging.getLogger("leadbot.brief")
 TIMEOUT_SECONDS = 60.0
 MAX_RETRIES = 3  # 4 tries in total. The SDK retries 429, 5xx (529 overloaded included) and network errors,
 #                  waits for Retry-After when the API sends it, and backs off with jitter otherwise.
-
-SYSTEM = """You write short research briefs for account executives (AEs) before they contact a prospect.
-
-You get one JSON fact sheet about a person, their company, what the CRM knows about them, and a verdict that \
-was already decided: "reach_out" or "hold".
-
-Rules:
-- Use ONLY the facts in the fact sheet. Never add a person, company, product, number, date, place or event that \
-is not in it. If a fact is missing, leave it out; do not guess and do not say that it is missing.
-- Copy "verdict" exactly as given. You do not decide it.
-- If the verdict is "hold", put the given hold reason into "hold_reason" in plain English. If the verdict is \
-"reach_out", "hold_reason" is an empty string.
-- "headline": one line on who this person is and why they matter to the seller.
-- "person": their role, seniority and time in the role.
-- "company": what the company does, its size and where it is.
-- "angle": one suggested way to open the conversation, tied to the seller's offer and based only on the facts.
-- "questions": exactly two discovery questions for a first call.
-- Plain English, short sentences. At most 110 words across all fields. No greetings, no markdown, no emojis."""
-
-BRIEF_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["reach_out", "hold"]},
-        "hold_reason": {"type": "string"},
-        "headline": {"type": "string"},
-        "person": {"type": "string"},
-        "company": {"type": "string"},
-        "angle": {"type": "string"},
-        "questions": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["verdict", "hold_reason", "headline", "person", "company", "angle", "questions"],
-    "additionalProperties": False,
-}
-
 
 @dataclass
 class BriefResult:
@@ -71,6 +42,7 @@ class BriefResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    prompt_version: str | None = None  # which skill file wrote it, e.g. "brief@2+3f9a1c2d"; None for no model call
 
 
 # ---------- template fallback ----------
@@ -123,27 +95,37 @@ class Draft:
 class ClaudeWriter:
     source = "claude"
 
-    def __init__(self, client: anthropic.AsyncAnthropic, model: str, max_tokens: int = 2000, effort: str = "low"):
+    def __init__(self, client: anthropic.AsyncAnthropic, model: str, max_tokens: int = 2000, effort: str = "low",
+                 skill: skills.Skill | None = None):
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
         self.effort = effort
+        self.skill = skill or skills.load()
+
+    def request(self, facts: dict) -> dict:
+        """The Messages API request. The system prompt and the worked examples are the same on every call, so the
+        last example is marked for prompt caching: everything up to it is read from cache after the first call.
+        (Claude caches a prefix of at least 512 tokens; the skill's examples take it past that.)"""
+        messages = self.skill.chat_messages(facts)
+        system, turns = messages[0]["content"], messages[1:]
+        if len(turns) > 1:
+            last_example = turns[-2]
+            turns[-2] = {"role": last_example["role"], "content": [
+                {"type": "text", "text": last_example["content"], "cache_control": {"type": "ephemeral"}}]}
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system,
+            "messages": turns,
+            # Structured output: the reply is guaranteed to be JSON that matches the skill's schema. (A forced
+            # tool call would do the same on older models; claude-sonnet-5-5 rejects forced tool_choice.)
+            "output_config": {"effort": self.effort, "format": {"type": "json_schema", "schema": self.skill.schema}},
+        }
 
     async def draft(self, facts: dict) -> Draft:
         try:
-            response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                # The system prompt is identical on every call, so it is marked for prompt caching. Note: Claude
-                # only caches a prefix of at least 512 tokens on this model. This prompt is shorter, so today the
-                # marker does nothing. It starts paying off, with no code change, once the prompt grows past that.
-                system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                # sort_keys keeps the request byte-stable for the same facts.
-                messages=[{"role": "user", "content": json.dumps(facts, sort_keys=True, ensure_ascii=False)}],
-                # Structured output: the reply is guaranteed to be JSON that matches BRIEF_SCHEMA. (A forced tool
-                # call would do the same on older models; claude-sonnet-5-5 rejects forced tool_choice.)
-                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": BRIEF_SCHEMA}},
-            )
+            response = await self.client.messages.create(**self.request(facts))
         # Most specific first. Every branch ends in the template: the AE still gets a brief.
         except anthropic.RateLimitError as e:
             raise ModelError(f"claude rate limit after retries: {e.message}") from e
@@ -166,19 +148,6 @@ class ClaudeWriter:
             raise ModelError(f"claude returned no valid JSON: {type(e).__name__}", usage) from e
 
 
-# These endpoints cannot be held to a schema, so the shape is spelled out in the prompt and verified by the checker.
-JSON_INSTRUCTIONS = """
-
-Return one JSON object and nothing else, with exactly these keys:
-  "verdict": "reach_out" or "hold"
-  "hold_reason": string
-  "headline": string
-  "person": string
-  "company": string
-  "angle": string
-  "questions": a list of exactly two strings"""
-
-
 def parse_json_reply(text: str) -> dict:
     """The JSON object in a reply that may carry code fences or stray prose around it."""
     text = re.sub(r"```(?:json)?", "", text)
@@ -197,13 +166,23 @@ class OpenAICompatWriter:
     source = "llm"
 
     def __init__(self, http: HttpClient, base_url: str, api_key: str, model: str, max_tokens: int = 2000,
-                 extra_body: dict | None = None):
+                 extra_body: dict | None = None, skill: skills.Skill | None = None):
+        self.skill = skill or skills.load()
         self.http = http
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         self.model = model
         self.max_tokens = max_tokens
         self.extra_body = extra_body or {}
+
+    def _formats(self) -> list[dict | None]:
+        """Output modes, strongest first. 1) json_schema: the endpoint may only produce JSON that matches the skill's
+        schema (NIM enforces this on the Nemotron models). 2) json_object: any valid JSON. 3) nothing: the prompt
+        and examples alone. Whatever comes back, Briefer.write validates it against the schema."""
+        return [{"type": "json_schema", "json_schema": {"name": self.skill.name, "schema": self.skill.schema,
+                                                        "strict": True}},
+                {"type": "json_object"},
+                None]
 
     async def _post(self, body: dict):
         return await self.http.request("llm", "POST", self.url, endpoint="chat/completions", timeout=TIMEOUT_SECONDS,
@@ -214,19 +193,20 @@ class OpenAICompatWriter:
             "model": self.model,
             "temperature": 0.2,
             "max_tokens": self.max_tokens,
-            "messages": [{"role": "system", "content": SYSTEM + JSON_INSTRUCTIONS},
-                         {"role": "user", "content": json.dumps(facts, sort_keys=True, ensure_ascii=False)}],
+            "messages": self.skill.chat_messages(facts),
             **self.extra_body,
         }
-        try:
+        response = None
+        for response_format in self._formats():
             try:
-                response = await self._post({**body, "response_format": {"type": "json_object"}})
+                mode = {"response_format": response_format} if response_format else {}
+                response = await self._post({**body, **mode})
+                break
             except ApiError as e:
-                if e.status != 400:
-                    raise
-                response = await self._post(body)  # some models reject JSON mode: ask again without it
-        except ApiError as e:
-            raise ModelError(f"llm api error {e.status or 'network'}: {e.detail[:200]}") from e
+                if e.status != 400 or response_format is None:
+                    raise ModelError(f"llm api error {e.status or 'network'}: {e.detail[:200]}") from e
+                # 400 = this model does not support that output mode: step down to the next one.
+                log.info("output mode not supported, stepping down", extra={"response_format": response_format["type"]})
 
         data = response.json()
         reported = data.get("usage") or {}
@@ -246,6 +226,10 @@ class OpenAICompatWriter:
 class Briefer:
     def __init__(self, writer: ClaudeWriter | OpenAICompatWriter | None):
         self.writer = writer
+
+    @property
+    def prompt_version(self) -> str | None:
+        return self.writer.skill.prompt_version if self.writer else None
 
     @property
     def model(self) -> str | None:
@@ -273,12 +257,19 @@ class Briefer:
             draft = await self.writer.draft(facts)
         except ModelError as e:
             return self._fallback(facts, str(e), check_passed=None, **e.usage)
+        # Two gates. First the shape: exactly the skill's keys and types. Then the content: only facts.
+        problems = self.writer.skill.validate(draft.out)
+        if problems:
+            log.warning("brief rejected by schema", extra={"problems": problems})
+            return self._fallback(facts, "schema: " + "; ".join(problems), check_passed=False, **draft.usage)
         problems = check(draft.out, facts)
         if problems:
             log.warning("brief rejected by checker", extra={"problems": problems})
             return self._fallback(facts, "checker: " + "; ".join(problems), check_passed=False, **draft.usage)
-        return BriefResult(draft.out, self.writer.source, self.model, True, None, **draft.usage)
+        return BriefResult(draft.out, self.writer.source, self.model, True, None, **draft.usage,
+                           prompt_version=self.prompt_version)
 
     def _fallback(self, facts: dict, reason: str, *, check_passed: bool | None, **usage) -> BriefResult:
         log.info("using template brief", extra={"fallback_reason": reason})
-        return BriefResult(template_brief(facts), "template", self.model, check_passed, reason, **usage)
+        return BriefResult(template_brief(facts), "template", self.model, check_passed, reason, **usage,
+                           prompt_version=self.prompt_version)

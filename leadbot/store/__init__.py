@@ -84,6 +84,7 @@ class BriefRecord(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
+    prompt_version: str | None = None
     slack_ts: str | None = None
     hubspot_note_id: str | None = None
 

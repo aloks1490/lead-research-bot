@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import httpx
 
+from leadbot.skill import load as load_skill
 from leadbot.store import Status
 from tests.conftest import JANE_NORM, faithful_brief
 
@@ -181,8 +182,12 @@ async def test_claude_only_sees_the_fact_sheet(world):
     assert call["model"] == "claude-sonnet-5-5"
     assert call["output_config"]["format"]["type"] == "json_schema"
     assert "tool_choice" not in call and "temperature" not in call  # both are rejected by claude-sonnet-5-5
-    assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert "jane.doe@acme.io" not in call["messages"][0]["content"]  # the email is not needed to write a brief
+    assert call["system"] == load_skill().system                      # the prompt comes from the skill file
+    assert len(call["messages"]) == 2 * len(load_skill().examples) + 1  # worked examples, then the real facts
+    assert call["messages"][-2]["content"][0]["cache_control"] == {"type": "ephemeral"}  # cached up to here
+    assert call["output_config"]["format"]["schema"] == load_skill().schema
+    assert "jane.doe@acme.io" not in call["messages"][-1]["content"]  # the email is not needed to write a brief
+    assert world.brief().prompt_version == load_skill().prompt_version
     assert world.brief().facts["person"]["name"] == "Jane Doe"
 
 

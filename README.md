@@ -60,6 +60,10 @@ The model writes words. Code decides everything else.
   existing customer, contacted in the last 30 days. First match wins. Adding a rule is one function and one test.
 - **The model only sees a fact sheet** built by [facts.py](leadbot/facts.py) from the cache and HubSpot. The verdict
   is already in it.
+- **The prompt is a file, not code.** [leadbot/prompts/brief.md](leadbot/prompts/brief.md) holds the rules, the
+  output schema and three worked examples, loaded by [skill.py](leadbot/skill.py). Every answer is validated
+  against that schema before it is fact-checked, and every stored brief records which prompt version wrote it.
+  Tests check that each worked example passes the bot's own checker, so a broken prompt fails CI.
 - **The model is a setting.** [brief.py](leadbot/brief.py) has two providers behind one interface: any
   OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter) through `LLM_API_KEY` and `LLM_MODEL`, or Claude through
   `ANTHROPIC_API_KEY`. The checker and the template fallback are the same for both, so the choice of model
@@ -100,6 +104,8 @@ from research_jobs j join briefs b on b.job_id = j.id where j.status = 'done' gr
 **Choosing the model.** Three free NVIDIA NIM models wrote the same briefs with reasoning on and off
 ([docs/model-benchmark.md](docs/model-benchmark.md)). Kimi K3.1 Pro with reasoning off passed 8 of 8 and wrote the
 best briefs, in a median of 19 s. Reasoning made every model 2 to 9 times slower without raising the pass rate.
+Moving the prompt into the skill file, with worked examples and schema enforcement, took Nemotron 3.5 Super VL
+from 7 to 12 passes out of 12, and hold briefs that still pitched from 12 of 12 to none.
 
 ## Reliability
 
@@ -126,7 +132,7 @@ best briefs, in a median of 19 s. Reasoning made every model 2 to 9 times slower
 {"ts": "...", "level": "INFO", "logger": "leadbot.http", "msg": "api call", "job_id": "ab461d7b-...", "step": "check_crm", "service": "hubspot", "endpoint": "/crm/v3/objects/contacts/search", "attempt": 1, "status_code": 200, "duration_ms": 87}
 ```
 
-**Tests.** 96 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
+**Tests.** 118 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
 clients, retries and parsers are exercised. The data-layer tests run twice: against the in-memory store, and in
 CI against a real Postgres container.
 
@@ -234,6 +240,7 @@ flowchart LR
         suppression["suppression.py<br/>reach out or hold"]
         facts["facts.py<br/>fact sheet"]
         brief["brief.py<br/>model call and template"]
+        skill["skill.py<br/>loads prompts/brief.md"]
         check["check.py<br/>fact checker"]
     end
     subgraph integrations["Integrations"]
@@ -253,6 +260,7 @@ flowchart LR
     jobs --> suppression
     jobs --> facts
     jobs --> brief
+    brief --> skill
     brief --> check
     jobs --> slack
     jobs --> clay

@@ -2,18 +2,22 @@
 
     uv run python scripts/benchmark_models.py                      # every LLM_MODEL line in .env, commented or not
     uv run python scripts/benchmark_models.py moonshotai/kimi-k3.1-pro z-ai/glm-5.3-flash
-    uv run python scripts/benchmark_models.py --repeat 2 --out bench.jsonl
+    uv run python scripts/benchmark_models.py --repeat 2 --thinking off --out bench.jsonl
 
 Each model writes the same four briefs (two "reach out", two "hold") twice: with its hidden reasoning on, and
-with it switched off. It uses the bot's own system prompt, JSON parsing and fact checker, so "passed" means the
-brief would have reached an AE. Responses are streamed to measure:
+with it switched off. It uses the bot's own prompt skill file, schema validation and fact checker, so "passed"
+means the brief would have reached an AE. --skill benchmarks a different prompt file against the same cases.
+Responses are streamed to measure:
 
   ttft_ms         time to the first token of any kind (reasoning or answer)
   answer_ms       time to the first token of the answer itself: what an AE waits for
   total_ms        time to the last token
   output_tok_s    completion tokens / generation time (first token to last)
   reasoning_tok   tokens spent thinking (from the provider's usage report)
-  passed          the brief passed the fact checker
+  passed          the brief passed schema validation and the fact checker
+  quality         name_first: the headline starts with the person's name
+                  hold_pitch: a "hold" brief whose angle still pitches instead of saying what to do instead
+                  puffery: words the facts never support ("growing", "leading", "scaling", ...)
 
 Results are one JSON object per call (--out); a summary table is printed at the end.
 """
@@ -27,10 +31,12 @@ import statistics
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 
-from leadbot.brief import JSON_INSTRUCTIONS, SYSTEM, parse_json_reply
+from leadbot import skill as skills
+from leadbot.brief import OpenAICompatWriter, parse_json_reply
 from leadbot.check import check
 from leadbot.config import Settings
 from leadbot.facts import build_facts
@@ -72,20 +78,40 @@ def models_from_env(path: Path = Path(".env")) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-async def call(client: httpx.AsyncClient, settings: Settings, model: str, facts: dict, thinking: bool) -> dict:
+PUFFERY = ("growing", "leading", "scaling", "fast-moving", "fast-growing", "rapidly", "well-funded", "innovative")
+HOLD_ACTIONS = ("do not contact", "don't contact", "wait", "coordinate", "align", "ask ", "check with", "resumes",
+                "follow up", "later")
+
+
+def quality(brief: dict, facts: dict) -> dict:
+    """Simple, repeatable signals for the problems the first benchmark found by reading every brief."""
+    text = " ".join(str(v) for k, v in brief.items() if k != "verdict").lower()
+    out = {"name_first": str(brief.get("headline", "")).startswith(facts["person"].get("name", "\0")),
+           "puffery": sorted(w for w in PUFFERY if w in text and w not in json.dumps(facts).lower())}
+    if facts["verdict"] == "hold":
+        out["hold_pitch"] = not any(a in str(brief.get("angle", "")).lower() for a in HOLD_ACTIONS)
+    return out
+
+
+async def call(client: httpx.AsyncClient, settings: Settings, model: str, facts: dict, thinking: bool,
+               skill: skills.Skill) -> dict:
     """One streamed request. Retries a 429 a few times; drops JSON mode if the model rejects it."""
     body = {
         "model": model, "temperature": 0.2, "max_tokens": 4000, "stream": True,
         "stream_options": {"include_usage": True},
-        "response_format": {"type": "json_object"},
-        "messages": [{"role": "system", "content": SYSTEM + JSON_INSTRUCTIONS},
-                     {"role": "user", "content": json.dumps(facts, sort_keys=True, ensure_ascii=False)}],
+        "messages": skill.chat_messages(facts),
         **({} if thinking else THINKING_OFF),
     }
     url = settings.llm_base_url.rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {settings.llm_api_key}", "Accept": "text/event-stream"}
-    result: dict = {"json_mode": True}
-    for attempt in range(5):
+    # The same output modes as the bot, strongest first (OpenAICompatWriter._formats): schema-enforced, JSON, none.
+    formats = OpenAICompatWriter._formats(SimpleNamespace(skill=skill))
+    result: dict = {"prompt_version": skill.prompt_version}
+    for attempt in range(6):
+        body.pop("response_format", None)
+        if formats[0]:
+            body["response_format"] = formats[0]
+        result["output_mode"] = formats[0]["type"] if formats[0] else "prompt only"
         start = time.monotonic()
         first_any = first_answer = None
         answer, reasoning_chars, usage, finish, chunks = [], 0, {}, None, 0
@@ -94,9 +120,8 @@ async def call(client: httpx.AsyncClient, settings: Settings, model: str, facts:
                 if response.status_code == 429 and attempt < 4:
                     await asyncio.sleep(float(response.headers.get("Retry-After") or 5 * (attempt + 1)))
                     continue
-                if response.status_code == 400 and "response_format" in body:
-                    body.pop("response_format")
-                    result["json_mode"] = False
+                if response.status_code == 400 and len(formats) > 1:
+                    formats.pop(0)  # this model does not support that output mode: step down
                     continue
                 if response.status_code != 200:
                     text = (await response.aread()).decode(errors="replace")
@@ -152,19 +177,20 @@ async def call(client: httpx.AsyncClient, settings: Settings, model: str, facts:
     except ValueError as e:
         result.update({"json_ok": False, "passed": False, "problems": [f"no JSON: {e}"]})
         return result
-    problems = check(brief, facts)
+    problems = skill.validate(brief) or check(brief, facts)
     words = sum(len(str(v).split()) for k, v in brief.items() if k != "verdict") if isinstance(brief, dict) else None
-    result.update({"json_ok": True, "passed": not problems, "problems": problems, "words": words, "brief": brief})
+    result.update({"json_ok": True, "passed": not problems, "problems": problems, "words": words, "brief": brief,
+                   "quality": quality(brief, facts)})
     return result
 
 
-async def bench_model(client, settings, model, all_cases, repeat, sink) -> list[dict]:
+async def bench_model(client, settings, model, all_cases, repeat, sink, modes, skill) -> list[dict]:
     rows = []
-    for thinking in (True, False):
+    for thinking in modes:
         for name, facts in all_cases.items():
             for run in range(repeat):
                 row = {"model": model, "thinking": thinking, "case": name, "run": run,
-                       **await call(client, settings, model, facts, thinking)}
+                       **await call(client, settings, model, facts, thinking, skill)}
                 rows.append(row)
                 sink(row)
                 status = row.get("error") or ("passed" if row.get("passed") else f"failed: {row.get('problems')}")
@@ -203,13 +229,17 @@ async def main() -> None:
     parser.add_argument("models", nargs="*", help="model ids; default: every LLM_MODEL line in .env")
     parser.add_argument("--repeat", type=int, default=1, help="runs per case and mode")
     parser.add_argument("--out", default="benchmark.jsonl", help="one JSON line per call")
+    parser.add_argument("--thinking", choices=["both", "on", "off"], default="both")
+    parser.add_argument("--skill", default=str(skills.DEFAULT_PATH), help="prompt skill file to test")
     args = parser.parse_args()
 
     settings = Settings()
+    skill = skills.load(args.skill)
     models = args.models or models_from_env()
     all_cases = cases(settings)
-    print(f"{len(models)} models x 2 modes x {len(all_cases)} cases x {args.repeat} runs, endpoint "
-          f"{settings.llm_base_url}\n", flush=True)
+    modes = {"both": (True, False), "on": (True,), "off": (False,)}[args.thinking]
+    print(f"{len(models)} models x {len(modes)} modes x {len(all_cases)} cases x {args.repeat} runs, endpoint "
+          f"{settings.llm_base_url}, prompt {skill.prompt_version}\n", flush=True)
     out = open(args.out, "w")
 
     def sink(row: dict) -> None:
@@ -217,7 +247,7 @@ async def main() -> None:
         out.flush()
 
     async with httpx.AsyncClient() as client:  # models run in parallel; each model's calls run one at a time
-        results = await asyncio.gather(*(bench_model(client, settings, m, all_cases, args.repeat, sink)
+        results = await asyncio.gather(*(bench_model(client, settings, m, all_cases, args.repeat, sink, modes, skill)
                                          for m in models))
     out.close()
     print("\n" + summary([r for rows in results for r in rows]))

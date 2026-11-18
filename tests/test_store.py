@@ -15,7 +15,7 @@ import pytest
 from leadbot.store import Company, Prospect, Status
 from leadbot.store.memory import MemoryStore
 
-MIGRATION = Path(__file__).parent.parent / "migrations" / "001_init.sql"
+MIGRATIONS = sorted((Path(__file__).parent.parent / "migrations").glob("*.sql"))
 
 
 @pytest.fixture(params=["memory", "postgres"])
@@ -29,7 +29,8 @@ async def store(request):
     from leadbot.store.postgres import PostgresStore
     pg = await PostgresStore.connect(url)
     async with pg.pool.connection() as conn:
-        await conn.execute(MIGRATION.read_text())
+        for migration in MIGRATIONS:
+            await conn.execute(migration.read_text())
         await conn.execute("truncate briefs, research_jobs, prospects, companies")
     yield pg
     await pg.close()
@@ -111,10 +112,10 @@ async def test_brief_upsert_updates_only_the_given_columns(store):
     job = await new_job(store)
     await store.upsert_brief(job.id, suppression={"verdict": "hold"})
     await store.upsert_brief(job.id, brief={"headline": "x"}, source="claude", check_passed=True, input_tokens=10)
-    await store.upsert_brief(job.id, slack_ts="1.2")
+    await store.upsert_brief(job.id, slack_ts="1.2", prompt_version="brief@2+abcd1234")
     record = await store.get_brief(job.id)
     assert record.suppression == {"verdict": "hold"} and record.brief == {"headline": "x"}
     assert (record.source, record.check_passed, record.input_tokens, record.slack_ts) == ("claude", True, 10, "1.2")
-    assert record.hubspot_note_id is None
+    assert record.prompt_version == "brief@2+abcd1234" and record.hubspot_note_id is None
     with pytest.raises(ValueError):
         await store.upsert_brief(job.id, not_a_column=1)
