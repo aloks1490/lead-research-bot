@@ -171,7 +171,7 @@ jobs call HubSpot and the model at once, which handles the second.
 ## Limits
 
 - Tested against mocked APIs and a local stand-in for Slack, Clay and HubSpot. The Slack app, Clay table, HubSpot
-  sandbox and deployment still have to be connected (steps below), and the numbers above measured.
+  test account and deployment still have to be connected (steps below), and the numbers above measured.
 - One Clay table, one enrichment source.
 - HubSpot contacts are matched by email. With no email from Clay, suppression uses company-level signals only
   and the note is attached to the company.
@@ -215,9 +215,12 @@ Without `DATABASE_URL` the store is in memory; set it to a Postgres URL and run
    the request URL to `https://<your-host>/slack/events` and subscribe to the `app_mention` bot event. Copy the
    signing secret and bot token. Invite the bot to your sales channel and to `#lead-research-alerts`.
 3. **Clay.** Follow [docs/clay-setup.md](docs/clay-setup.md).
-4. **HubSpot.** Create a private app in a sandbox with read access to contacts, companies, deals and owners and
-   write access to contacts (notes use the contact scopes). If a scope is missing, HubSpot's 403 names it and it
-   shows up in the failure alert.
+4. **HubSpot.** Use a free account or a developer test account filled with test contacts. Create a service key
+   under Development > Keys > Service keys (HubSpot stopped new private apps in October 2026; existing private
+   app tokens still work). Give it these scopes: `crm.objects.contacts.read`, `crm.objects.contacts.write` (notes
+   use the contact scopes), `crm.objects.companies.read`, `crm.objects.deals.read` and `crm.objects.owners.read`.
+   Put the `pat-...` key in `HUBSPOT_TOKEN`. If a scope is missing, HubSpot's 403 names it and it shows up in the
+   failure alert.
 5. **Deploy.** The [Dockerfile](Dockerfile) runs anywhere that runs a container. Prefer a host without cold
    starts: Slack wants its 200 within 3 seconds. If a cold start is slower, Slack resends and the `event_id`
    check drops the copy, so nothing breaks, but the first reply is late.
