@@ -97,6 +97,10 @@ from research_jobs j join briefs b on b.job_id = j.id where j.status = 'done' gr
 | Cache hit rate | _to measure_ |
 | Checker pass rate | _to measure_ |
 
+**Choosing the model.** Three free NVIDIA NIM models wrote the same briefs with reasoning on and off
+([docs/model-benchmark.md](docs/model-benchmark.md)). Kimi K3.1 Pro with reasoning off passed 8 of 8 and wrote the
+best briefs, in a median of 19 s. Reasoning made every model 2 to 9 times slower without raising the pass rate.
+
 ## Reliability
 
 | Failure | Handling | Test |
