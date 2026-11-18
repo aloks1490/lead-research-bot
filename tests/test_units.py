@@ -244,6 +244,12 @@ def test_anything_not_in_the_facts_is_rejected(field, text, expected):
     assert any(expected in p for p in problems), problems
 
 
+def test_a_country_allows_its_adjective_but_no_other():
+    # Found in the first real model run: "a German fintech" was rejected although the facts say Germany.
+    assert check({**GOOD, "company": "Acme is a German fintech."}, FACTS) == []
+    assert any("French" in p for p in check({**GOOD, "company": "Acme is a French fintech."}, FACTS))
+
+
 def test_verdict_and_hold_reason_must_match_the_code():
     hold_facts = {**FACTS, "verdict": "hold", "hold_reason": "Already a customer"}
     assert any("verdict changed" in p for p in check(GOOD, hold_facts))

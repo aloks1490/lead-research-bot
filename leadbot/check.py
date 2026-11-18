@@ -26,6 +26,17 @@ COMMON_WORDS = {
     "crm", "hubspot", "linkedin", "saas", "b2b", "smb", "smbs", "ae", "aes", "sdr", "bdr", "q1", "q2", "q3", "q4",
 }
 
+# A country in the facts also allows its adjective: "Germany" -> "German". Kept to the markets a European
+# compliance seller works in. A country missing here only costs a template brief; add it on the next line.
+COUNTRY_ADJECTIVES = {
+    "germany": "german", "austria": "austrian", "switzerland": "swiss", "france": "french",
+    "netherlands": "dutch", "belgium": "belgian", "luxembourg": "luxembourgish", "spain": "spanish",
+    "portugal": "portuguese", "italy": "italian", "ireland": "irish", "united kingdom": "british",
+    "denmark": "danish", "sweden": "swedish", "norway": "norwegian", "finland": "finnish", "poland": "polish",
+    "czechia": "czech", "czech republic": "czech", "estonia": "estonian", "india": "indian",
+    "united states": "american",
+}
+
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
           "november", "december"]
 
@@ -63,11 +74,14 @@ def _fact_numbers(facts: dict) -> set[str]:
 
 
 def _fact_words(facts: dict) -> set[str]:
-    """Words in the facts plus the month names of their dates ('2026-11-02' allows 'November' and 'Nov')."""
+    """Words in the facts plus harmless rewordings: the month names of their dates ('2026-11-02' allows
+    'November' and 'Nov'), and the adjective of a country they name ('Germany' allows 'German')."""
     words = _words(facts)
     for _, month, _ in _ISO_DATE.findall(_dump(facts)):
         name = MONTHS[int(month) - 1]
         words |= {name, name[:3]}
+    text = _dump(facts).casefold()
+    words |= {adjective for country, adjective in COUNTRY_ADJECTIVES.items() if country in text}
     return words
 
 
