@@ -6,10 +6,13 @@ between HubSpot portals.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 
 from leadbot.http import ApiError, HttpClient
+
+log = logging.getLogger("leadbot.hubspot")
 
 TIMEOUT = 10.0
 OK = (200, 201, 204, 207)
@@ -159,7 +162,8 @@ class HubSpot:
                              company_name: str | None, linkedin_url: str) -> str | None:
         """Create the contact if HubSpot does not have it. An existing contact is left alone: the CRM is the
         source of truth and a rep may have edited it. Returns the contact id, or None when there is no email
-        to key the contact on."""
+        to key the contact on, or when HubSpot rejects the new contact's values (then the note goes on the company
+        alone: the brief has already reached the AE, and a bad email from enrichment should not undo that)."""
         if state.contact_id:
             return state.contact_id
         if not email:
@@ -173,6 +177,10 @@ class HubSpot:
             created = await self._request("POST", "/crm/v3/objects/contacts", json={"properties": props})
             return str(created["id"])
         except ApiError as e:
+            if e.status == 400:
+                # 400 = HubSpot rejected a value, e.g. INVALID_EMAIL. Retrying cannot fix the data, so skip the contact.
+                log.warning("hubspot rejected the new contact", extra={"hubspot_error": e.detail[:300]})
+                return None
             if e.status != 409:
                 raise
             # 409 = the contact appeared between our search and our create (a retried step, or a rep). Use it.

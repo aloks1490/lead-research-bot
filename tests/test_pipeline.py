@@ -146,6 +146,28 @@ async def test_existing_contact_is_not_overwritten(world):
     assert world.hubspot.notes[0]["associations"][0]["to"]["id"] == "100"
 
 
+async def test_an_email_hubspot_rejects_does_not_fail_the_job(world):
+    # Found in the first run against real HubSpot: an email it refused (INVALID_EMAIL) failed the job after the
+    # brief was already in the thread, so the AE got the brief and then "Sorry, I could not finish".
+    company_id = world.hubspot.add_company("acme.io", name="Acme")
+    world.hubspot.reject_new_contacts = True
+    await research_jane(world)
+
+    assert world.job().status == Status.DONE
+    assert world.alerts() == [] and "could not finish" not in world.thread_messages()[-1]["text"]
+    assert world.hubspot.contacts == {}
+    note = world.hubspot.notes[0]
+    assert [a["to"]["id"] for a in note["associations"]] == [company_id]  # the note still lands, on the company
+
+
+async def test_hold_text_has_one_full_stop(world):
+    world.hubspot.add_company("acme.io", name="Acme", lifecyclestage="customer")
+    world.claude.reply = lambda facts: {**faithful_brief(facts), "hold_reason": "Acme is already a customer."}
+    await research_jane(world)
+    text = world.thread_messages()[-1]["text"]
+    assert text.startswith("HOLD: Acme is already a customer. ") and ".." not in text
+
+
 # ---------- the model is never trusted ----------
 
 async def test_invented_facts_are_rejected_and_the_template_brief_goes_out(world):

@@ -86,6 +86,7 @@ class FakeHubSpot:
         self.owners = {"77": {"firstName": "Priya", "email": "priya@seller.test"}}
         self.notes: list[dict] = []
         self.fail_with: list[httpx.Response] = []  # responses to serve before behaving normally
+        self.reject_new_contacts = False  # answer a contact create with HubSpot's INVALID_EMAIL 400
         self.requests: list[httpx.Request] = []
         router.route(url__startswith=HUBSPOT).mock(side_effect=self._handle)
 
@@ -135,6 +136,9 @@ class FakeHubSpot:
             owner = self.owners.get(parts[-1])
             return httpx.Response(200, json=owner) if owner else httpx.Response(404, json={})
         if path == "/crm/v3/objects/contacts" and method == "POST":
+            if self.reject_new_contacts:
+                return httpx.Response(400, json={"status": "error", "message": "Property values were not valid",
+                                                 "errors": [{"error": "INVALID_EMAIL", "name": "email"}]})
             contact_id = self.add_contact(**body["properties"])
             return httpx.Response(201, json={"id": contact_id, "properties": body["properties"]})
         if path == "/crm/v3/objects/notes" and method == "POST":

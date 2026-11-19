@@ -32,7 +32,8 @@ class Slack:
 
 def brief_text(brief: dict) -> str:
     """Plain-text version: used for notifications and as the fallback when blocks cannot render."""
-    lead = f"HOLD: {brief['hold_reason']}" if brief["verdict"] == "hold" else "OK to reach out"
+    # The model usually ends its hold reason with a full stop; strip it so the text never shows "customer..".
+    lead = f"HOLD: {brief['hold_reason'].rstrip('. ')}" if brief["verdict"] == "hold" else "OK to reach out"
     return f"{lead}. {brief['headline']}"
 
 

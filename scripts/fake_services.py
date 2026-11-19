@@ -35,6 +35,21 @@ PEOPLE = {  # what "Clay" knows, keyed by profile slug; unknown slugs get a gene
                     {"name": "Globex", "domain": "globex.com", "industry": "Logistics software",
                      "employee_count": 85, "country": "Austria", "description": "Route planning for couriers."}),
     "nobody-here": ({"full_name": ""}, {}),  # a profile Clay cannot find
+    # These match records that scripts/seed_hubspot.py creates in a HubSpot test account, for a run where only
+    # Slack and Clay are stand-ins (HUBSPOT_BASE_URL=https://api.hubapi.com).
+    "riya-reach": ({"full_name": "Riya Reach", "title": "Head of IT", "email": "riya.reach@example.com",
+                    "location": "Munich", "role_started_on": "2023-05-01"},
+                   {"name": "Reach Systems", "domain": "reach-systems.example", "industry": "Software",
+                    "employee_count": 150, "country": "Germany", "description": "Scheduling software for clinics."}),
+    "omar-deal": ({"full_name": "Omar Deal", "title": "VP Engineering", "email": "omar.deal@example.com",
+                   "location": "Vienna", "role_started_on": "2021-09-01"},
+                  {"name": "Dealmark", "domain": "dealmark.example", "industry": "Fintech", "employee_count": 320,
+                   "country": "Austria", "description": "Invoicing for small businesses."}),
+    "nina-newhire": ({"full_name": "Nina Newhire", "title": "Security Lead",
+                      "email": "nina.newhire@customer-co.example", "location": "Zurich",
+                      "role_started_on": "2026-09-01"},
+                     {"name": "Customer Co", "domain": "customer-co.example", "industry": "Insurance",
+                      "employee_count": 900, "country": "Switzerland", "description": "Insurance for small fleets."}),
 }
 
 
