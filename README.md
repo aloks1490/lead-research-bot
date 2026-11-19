@@ -220,7 +220,8 @@ Without `DATABASE_URL` the store is in memory; set it to a Postgres URL and run
    app tokens still work). Give it these scopes: `crm.objects.contacts.read`, `crm.objects.contacts.write` (notes
    use the contact scopes), `crm.objects.companies.read`, `crm.objects.deals.read` and `crm.objects.owners.read`.
    Put the `pat-...` key in `HUBSPOT_TOKEN`. If a scope is missing, HubSpot's 403 names it and it shows up in the
-   failure alert.
+   failure alert. To fill a test account with one record per suppression verdict and check that the bot decides
+   each one correctly, run [scripts/seed_hubspot.py](scripts/seed_hubspot.py) (it uses a second, wider key).
 5. **Deploy.** The [Dockerfile](Dockerfile) runs anywhere that runs a container. Prefer a host without cold
    starts: Slack wants its 200 within 3 seconds. If a cold start is slower, Slack resends and the `event_id`
    check drops the copy, so nothing breaks, but the first reply is late.

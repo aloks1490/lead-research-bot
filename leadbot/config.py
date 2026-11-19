@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     hubspot_base_url: str = "https://api.hubapi.com"
     hubspot_dnc_property: str = "hs_email_optout"  # the contact property that means "do not contact"
     hubspot_linkedin_property: str = "hs_linkedin_url"  # written on new contacts; empty string to skip
+    hubspot_seed_token: str = ""  # only scripts/seed_hubspot.py uses this wider-scoped key, never the bot
 
     # Model provider 1: any OpenAI-compatible chat endpoint (NVIDIA NIM, OpenRouter, ...).
     # Used when LLM_API_KEY and LLM_MODEL are both set; it then takes priority over Claude.
