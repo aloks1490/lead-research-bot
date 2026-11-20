@@ -17,7 +17,7 @@ from leadbot.clay import ClayCallback
 from leadbot.facts import tenure
 from leadbot.http import ApiError, HttpClient
 from leadbot.hubspot import CrmState, OpenDeal
-from leadbot.security import secrets_match, verify_slack_signature
+from leadbot.security import secrets_match, slack_signature_problem, verify_slack_signature
 from leadbot.skill import load as load_skill
 from leadbot.suppression import Context, evaluate
 from leadbot.urls import extract_url, normalise_linkedin_url
@@ -76,6 +76,17 @@ def test_slack_signature():
     assert not verify_slack_signature("secret", str(now), body, good, now=now + 301)         # too old
     assert not verify_slack_signature("secret", None, body, good, now=now)                   # header missing
     assert not verify_slack_signature("", str(now), body, _sign("", str(now), body), now=now)  # secret not configured
+
+
+def test_a_refused_slack_signature_says_why():
+    body, now = b'{"a": 1}', 1_700_000_000
+    good = _sign("secret", str(now), body)
+    assert slack_signature_problem("secret", str(now), body, good, now=now) is None
+    assert "not set" in slack_signature_problem("", str(now), body, good, now=now)
+    assert "missing" in slack_signature_problem("secret", None, body, good, now=now)
+    assert "not a number" in slack_signature_problem("secret", "abc", body, good, now=now)
+    assert "is 400 s old" in slack_signature_problem("secret", str(now), body, good, now=now + 400)
+    assert "does not match" in slack_signature_problem("other", str(now), body, good, now=now)
 
 
 def test_an_unset_secret_never_matches():

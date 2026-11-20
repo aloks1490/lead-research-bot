@@ -22,7 +22,7 @@ from leadbot.config import Settings
 from leadbot.http import HttpClient
 from leadbot.hubspot import HubSpot
 from leadbot.jobs import Deps, Runner
-from leadbot.security import secrets_match, verify_slack_signature
+from leadbot.security import secrets_match, slack_signature_problem
 from leadbot.slack import Slack
 from leadbot.store import Store
 from leadbot.store.memory import MemoryStore
@@ -91,9 +91,15 @@ def create_app(settings: Settings | None = None, runner: Runner | None = None) -
         """Slack wants a 200 within 3 seconds or it sends the event again. So this handler only verifies,
         stores the job and returns; the research runs in the background."""
         body = await request.body()
-        if not verify_slack_signature(settings.slack_signing_secret, request.headers.get("X-Slack-Request-Timestamp"),
-                                      body, request.headers.get("X-Slack-Signature")):
-            log.warning("slack signature rejected")
+        problem = slack_signature_problem(settings.slack_signing_secret,
+                                          request.headers.get("X-Slack-Request-Timestamp"), body,
+                                          request.headers.get("X-Slack-Signature"))
+        if problem:
+            log.warning("slack signature rejected", extra={
+                "reason": problem,
+                "retry_num": request.headers.get("X-Slack-Retry-Num"),        # set when Slack is resending
+                "retry_reason": request.headers.get("X-Slack-Retry-Reason"),
+                "body_bytes": len(body)})
             return JSONResponse({"error": "invalid signature"}, status_code=401)
         try:
             payload = json.loads(body)
@@ -101,11 +107,17 @@ def create_app(settings: Settings | None = None, runner: Runner | None = None) -
             return JSONResponse({"error": "invalid json"}, status_code=400)
 
         if payload.get("type") == "url_verification":  # Slack's one-time check when the URL is saved
+            log.info("slack url verified")
             return {"challenge": payload.get("challenge")}
 
         event = payload.get("event") or {}
         if payload.get("type") != "event_callback" or event.get("type") != "app_mention" or event.get("bot_id"):
-            return {"ok": True}  # an event we do not handle: acknowledge it so Slack does not resend
+            # An event we do not handle: acknowledge it so Slack does not resend, and say what it was, so a 200
+            # with no job in the database is explained in the logs.
+            log.info("slack event ignored", extra={"payload_type": payload.get("type"),
+                                                   "event_type": event.get("type"),
+                                                   "from_a_bot": bool(event.get("bot_id"))})
+            return {"ok": True}
 
         runner_: Runner = request.app.state.runner
         job = await runner_.d.store.create_job(

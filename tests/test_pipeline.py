@@ -88,10 +88,23 @@ async def test_slack_resend_of_the_same_event_creates_one_job(world):
     assert len(world.clay_requests) == 1
 
 
-async def test_forged_slack_request_is_rejected(world):
+async def test_forged_slack_request_is_rejected(world, caplog):
     response = await world.mention(signature="v0=" + "0" * 64)
     assert response.status_code == 401
     assert world.store.jobs == {}
+    rejected = next(r for r in caplog.records if r.getMessage() == "slack signature rejected")
+    assert "does not match" in rejected.reason  # the log says why, so a 401 in production can be diagnosed
+
+
+async def test_an_ignored_slack_event_is_logged(world, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    body = json.dumps({"type": "event_callback", "event_id": "Ev-msg",
+                       "event": {"type": "message", "channel": "C_SALES", "text": "hi", "ts": "1.2"}}).encode()
+    response = await world.post_slack(body)
+    assert response.status_code == 200 and world.store.jobs == {}
+    ignored = next(r for r in caplog.records if r.getMessage() == "slack event ignored")
+    assert ignored.event_type == "message"
 
 
 async def test_replayed_slack_request_is_rejected(world):
