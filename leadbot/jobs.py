@@ -273,7 +273,7 @@ class Runner:
         return len(jobs)
 
     async def sweep(self) -> dict:
-        """Run every few minutes by an outside scheduler (POST /internal/sweep).
+        """Run every few minutes by sweep_forever, inside this process (and on demand: POST /internal/sweep).
         1. Clay never called back: fail the job after `enrich_timeout_minutes`, so the AE is not left waiting.
         2. A job stopped mid-way (the process died): run it again from its last status."""
         timeout = timedelta(minutes=self.d.settings.enrich_timeout_minutes)
@@ -285,6 +285,17 @@ class Runner:
         result = {"timed_out": len(timed_out), "resumed": resumed}
         log.info("sweep done", extra=result)
         return result
+
+    async def sweep_forever(self, interval_seconds: float) -> None:
+        """Sweep on a timer inside the bot. An outside scheduler was tried first: GitHub Actions ran its
+        "every 5 minutes" schedule only every 5 to 8 hours, so a job Clay never answered could wait hours to fail.
+        A failed sweep is logged and tried again next time; it never stops the loop."""
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                await self.sweep()
+            except Exception:
+                log.exception("sweep failed, trying again next interval")
 
 
 def note_html(brief: dict, job: Job) -> str:

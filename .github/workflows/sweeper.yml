@@ -1,20 +1,21 @@
 name: Sweeper
 
-# Every 5 minutes: time out jobs Clay never answered, and resume jobs a restart left mid-way.
-# GitHub's cron is best-effort and can run late; for tighter timing use Supabase pg_cron + pg_net to call the same URL.
+# Manual only. The bot runs its own sweep every 5 minutes (SWEEP_INTERVAL_SECONDS); this workflow triggers one
+# on demand from the Actions tab or with `gh workflow run Sweeper`.
+#
+# It used to run on a schedule ("*/5 * * * *"), but GitHub ran it only every 5 to 8 hours, and each run hit a
+# sleeping free Render service that took about a minute to wake, so curl gave up and every run failed.
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
   sweep:
-    # Skipped until the bot is deployed and the BOT_URL repository variable is set, so it does not fail every 5 minutes.
     if: ${{ vars.BOT_URL != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Call the sweep endpoint
+        # 120 s: a sleeping free Render service takes about a minute to wake on the first request.
         run: |
-          curl --fail --silent --show-error --max-time 30 -X POST \
+          curl --fail --silent --show-error --max-time 120 -X POST \
             -H "X-Internal-Secret: ${{ secrets.INTERNAL_SECRET }}" \
             "${{ vars.BOT_URL }}/internal/sweep"

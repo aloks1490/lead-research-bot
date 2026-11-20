@@ -4,6 +4,8 @@ Run locally:  uv run uvicorn leadbot.main:app --reload
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -64,7 +66,15 @@ def create_app(settings: Settings | None = None, runner: Runner | None = None) -
             resumed = await app.state.runner.resume_interrupted()  # jobs a restart left mid-way
             log.info("service started", extra={"jobs_resumed": resumed,
                                               "model": app.state.runner.d.briefer.model or "none (template only)"})
+            app.state.sweeper = None
+            if settings.sweep_interval_seconds > 0:
+                app.state.sweeper = asyncio.create_task(
+                    app.state.runner.sweep_forever(settings.sweep_interval_seconds))
             yield
+            if app.state.sweeper:
+                app.state.sweeper.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await app.state.sweeper
             await app.state.runner.drain()
         await store.close()
 

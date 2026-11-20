@@ -116,7 +116,7 @@ from 7 to 12 passes out of 12, and hold briefs that still pitched from 12 of 12 
 | HubSpot or Slack rate limit (429), server error (5xx) | One shared client ([http.py](leadbot/http.py)): waits for `Retry-After`, else exponential backoff with jitter, 4 tries | `test_hubspot_rate_limit_is_retried_after_the_given_wait` |
 | Model rate limit (429) or overload | NIM-style endpoints go through the shared client; Claude through the Anthropic SDK, which applies the same policy (4 tries, 60 s timeout). If it still fails, the template brief goes out | `test_rate_limited_model_is_retried_by_the_shared_client`, `test_a_claude_outage_falls_back_to_the_template` |
 | Slow or hung API | A timeout on every call: 10 s for Slack, Clay and HubSpot, 60 s for the model | `test_a_timeout_is_retried` |
-| Clay never calls back | The sweeper (`POST /internal/sweep`, every 5 minutes from GitHub Actions) fails jobs stuck in `enriching` for over 10 minutes | `test_clay_that_never_calls_back_is_timed_out_by_the_sweeper` |
+| Clay never calls back | The bot sweeps itself every 5 minutes and fails jobs stuck in `enriching` for over 10 minutes. (A GitHub Actions schedule was tried first: it ran every 5 to 8 hours, not every 5 minutes.) | `test_clay_that_never_calls_back_is_timed_out_by_the_sweeper` |
 | Clay calls back late | The data is still cached, so the next request for that person costs nothing | `test_late_clay_callback_is_still_cached` |
 | The model invents a fact or changes the verdict | Checker rejects it; template brief instead; `fallback_reason` stored | `test_invented_facts_are_rejected...`, `test_the_model_cannot_change_the_verdict` |
 | The model returns prose, code fences or no JSON | The JSON object is extracted if there is one; otherwise the template brief goes out | `test_json_wrapped_in_code_fences_and_prose_is_still_read`, `test_an_unusable_reply_falls_back_to_the_template` |
@@ -176,7 +176,8 @@ jobs call HubSpot and the model at once, which handles the second.
 - HubSpot contacts are matched by email. With no email from Clay, suppression uses company-level signals only
   and the note is attached to the company.
 - A profile Clay cannot find is cached as empty for 30 days.
-- Background jobs run inside the web process. Run one instance.
+- Background jobs and the sweeper run inside the web process. Run one instance.
+- On Render's free plan the service sleeps when idle. It depends on an outside uptime monitor to stay awake.
 
 ## Run it locally (no accounts needed)
 
@@ -222,11 +223,16 @@ Without `DATABASE_URL` the store is in memory; set it to a Postgres URL and run
    Put the `pat-...` key in `HUBSPOT_TOKEN`. If a scope is missing, HubSpot's 403 names it and it shows up in the
    failure alert. To fill a test account with one record per suppression verdict and check that the bot decides
    each one correctly, run [scripts/seed_hubspot.py](scripts/seed_hubspot.py) (it uses a second, wider key).
-5. **Deploy.** The [Dockerfile](Dockerfile) runs anywhere that runs a container. Prefer a host without cold
-   starts: Slack wants its 200 within 3 seconds. If a cold start is slower, Slack resends and the `event_id`
-   check drops the copy, so nothing breaks, but the first reply is late.
-6. **Sweeper.** In the GitHub repo set the secret `INTERNAL_SECRET` and the variable `BOT_URL`;
-   [.github/workflows/sweeper.yml](.github/workflows/sweeper.yml) does the rest.
+5. **Deploy.** The [Dockerfile](Dockerfile) runs anywhere that runs a container. This one runs on Render's free
+   plan in Frankfurt, next to the Supabase project in Ireland. Paste environment values without quotes or
+   comments: unlike `.env`, Render keeps them as part of the value.
+6. **Keep it awake.** A free Render service sleeps after about 15 minutes idle and took 53 s to wake, far past
+   Slack's 3 seconds. Nothing breaks (Slack resends and the `event_id` check drops the copy), but the first reply
+   is late, and the bot's own sweeper does not run while it sleeps. A free uptime monitor that calls `/healthz`
+   every 5 minutes keeps it awake. On a paid instance this step is not needed.
+7. **Manual sweep (optional).** With the secret `INTERNAL_SECRET` and the variable `BOT_URL` set in the GitHub
+   repo, `gh workflow run Sweeper` triggers a sweep on demand
+   ([.github/workflows/sweeper.yml](.github/workflows/sweeper.yml)).
 
 ## Layout
 

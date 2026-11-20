@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = 5  # caps parallel HubSpot and model calls at 10x volume
     enrich_timeout_minutes: int = 10
     stuck_job_minutes: int = 5
+    sweep_interval_seconds: int = 300  # how often the bot runs its own sweep; 0 turns it off
     max_attempts: int = 5  # runs per job. A normal cache-miss job uses 2: one up to Clay, one after the callback.
     internal_secret: str = ""  # header secret for POST /internal/sweep
 

@@ -64,4 +64,4 @@ The whole payload is stored in `prospects.raw`, so a field you add later can be 
 
 Mention the bot with a new profile and look for these log lines with the same `job_id`:
 `api call` with `"service": "clay"`, then `clay callback stored` with `"jobs_resumed": 1`.
-If the callback never arrives, the sweeper fails the job after 10 minutes and posts an alert.
+If the callback never arrives, the bot's sweeper (every 5 minutes) fails the job after 10 minutes and posts an alert.

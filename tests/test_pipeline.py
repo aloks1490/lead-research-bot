@@ -324,3 +324,40 @@ async def test_a_job_that_keeps_crashing_is_given_up_on(world):
     await world.runner.resume_interrupted()
     await world.runner.drain()
     assert world.job().status == Status.FAILED and "gave up" in world.job().last_error
+
+
+# ---------- the in-process sweeper ----------
+
+async def test_the_sweeper_keeps_running_after_a_failed_sweep(world):
+    import asyncio
+    calls = []
+
+    async def sweep():
+        calls.append(len(calls))
+        if len(calls) == 2:
+            raise RuntimeError("database blip")
+        return {}
+
+    world.runner.sweep = sweep
+    task = asyncio.create_task(world.runner.sweep_forever(0.01))
+    for _ in range(200):
+        if len(calls) >= 4:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    assert len(calls) >= 4  # the failure on the second sweep did not stop the third and fourth
+
+
+async def test_the_app_starts_and_stops_its_own_sweeper():
+    from leadbot.main import create_app
+    from tests.conftest import settings as make_settings
+
+    app = create_app(make_settings().model_copy(update={"sweep_interval_seconds": 3600}))
+    async with app.router.lifespan_context(app):
+        sweeper = app.state.sweeper
+        assert sweeper is not None and not sweeper.done()
+    assert sweeper.cancelled()
+
+    app = create_app(make_settings().model_copy(update={"sweep_interval_seconds": 0}))
+    async with app.router.lifespan_context(app):
+        assert app.state.sweeper is None  # 0 turns it off
