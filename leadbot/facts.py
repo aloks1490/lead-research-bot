@@ -42,7 +42,8 @@ def build_facts(prospect: Prospect, company: Company | None, crm: CrmState, verd
             "location": prospect.location,
         }),
         "company": _drop_empty({
-            "name": company.name, "industry": company.industry, "employees": company.employee_count,
+            "name": company.name, "industry": company.industry,
+            "employees": company.employee_count or company.employee_range,  # an exact count, else a band
             "country": company.country, "description": company.description,
         }) if company else {},
         "crm": _drop_empty({

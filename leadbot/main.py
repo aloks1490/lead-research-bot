@@ -26,6 +26,7 @@ from leadbot.security import secrets_match, slack_signature_problem
 from leadbot.slack import Slack
 from leadbot.store import Store
 from leadbot.store.memory import MemoryStore
+from leadbot.treg import Treg
 
 log = logging.getLogger("leadbot.main")
 
@@ -37,6 +38,7 @@ def build_runner(settings: Settings, store: Store, http: HttpClient, briefer: Br
         store=store,
         slack=Slack(http, settings.slack_bot_token, settings.slack_base_url),
         clay=Clay(http, settings.clay_webhook_url, settings.clay_webhook_token),
+        treg=Treg(http, settings.treg_token, settings.treg_base_url),
         hubspot=HubSpot(http, settings.hubspot_token, settings.hubspot_base_url, settings.hubspot_dnc_property,
                         settings.hubspot_linkedin_property),
         briefer=briefer or Briefer.from_settings(settings, http),

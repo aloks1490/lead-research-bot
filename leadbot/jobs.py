@@ -1,7 +1,8 @@
 """The job runner: one request moves through a status machine, one step at a time.
 
     received -> normalised -> cache_hit ----------------------------> checked -> briefed -> done
-                           -> cache_miss -> enriching -> enriched --/
+                           -> cache_miss -> enriched (treg) -------/
+                           -> cache_miss -> enriching -> enriched (Clay, after its callback)
     any step can end in `failed`; a bad URL ends in `rejected`
 
 Each step does its work, then moves the job to the next status with a compare-and-set. Because the status is in
@@ -19,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 from leadbot import slack as slack_ui
 from leadbot.brief import Briefer
-from leadbot.clay import Clay, ClayCallback
+from leadbot.clay import Clay, ClayCallback, ClayCompany, ClayPerson
 from leadbot.config import Settings
 from leadbot.facts import build_facts
 from leadbot.hubspot import CrmState, HubSpot
@@ -27,6 +28,7 @@ from leadbot.logs import job_id_var, timed_step
 from leadbot.slack import Slack
 from leadbot.store import RESUMABLE, Company, Job, Prospect, Status, Store
 from leadbot.suppression import Context, Verdict, evaluate
+from leadbot.treg import Treg
 from leadbot.urls import extract_url, normalise_linkedin_url
 
 log = logging.getLogger("leadbot.jobs")
@@ -44,6 +46,7 @@ class Deps:
     clay: Clay
     hubspot: HubSpot
     briefer: Briefer
+    treg: Treg | None = None
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
 
@@ -136,6 +139,9 @@ class Runner:
         return await self._move(job, Status.CACHE_HIT if fresh else Status.CACHE_MISS)
 
     async def _enrich(self, job: Job) -> bool:
+        if self.d.settings.enrichment_provider == "treg":
+            return await self._enrich_with_treg(job)
+        # Clay: send the profile, then wait for Clay's callback (POST /webhooks/clay) to resume the job.
         # Is another job already waiting on Clay for this same profile? Then wait with it: one Clay call serves both.
         already_waiting = await self.d.store.enriching_jobs(job.linkedin_url_norm)
         # Move to `enriching` BEFORE calling Clay, so a fast callback always finds the job in the right status.
@@ -146,6 +152,29 @@ class Runner:
         else:
             await self.d.clay.enrich(job.linkedin_url_norm, job.id)
         return False  # nothing more to do until POST /webhooks/clay resumes the job
+
+    async def _enrich_with_treg(self, job: Job) -> bool:
+        """treg answers in the same request, so the job goes straight from cache_miss to enriched. If the process
+        dies during the lookups, the job is still in cache_miss and resumes from here."""
+        found = await self.d.treg.enrich(job.linkedin_url_norm)
+        await self.store_enrichment(job.linkedin_url_norm, found.person, found.company,
+                                    raw={**found.raw, "cost_micro": found.cost_micro}, source="treg")
+        log.info("treg enrichment stored", extra={"found": bool(found.person.full_name),
+                                                  "has_email": bool(found.person.email),
+                                                  "company_domain": found.company.domain,
+                                                  "cost_micro": found.cost_micro})
+        return await self._move(job, Status.ENRICHED)
+
+    async def store_enrichment(self, url_norm: str, person: ClayPerson, company: ClayCompany, *, raw: dict,
+                               source: str) -> None:
+        """Cache what an enrichment source found, whichever source it was. An empty person is cached too: asking
+        again within the cache window costs nothing, and the job tells the AE that nobody was found."""
+        if company.domain:
+            await self.d.store.upsert_company(Company(**company.model_dump(), raw=company.model_dump(mode="json")))
+        await self.d.store.upsert_prospect(Prospect(
+            linkedin_url_norm=url_norm, name=person.full_name, title=person.title, email=person.email,
+            location=person.location, role_started_on=person.role_started_on, company_domain=company.domain,
+            enriched_at=self.d.now(), source=source, raw=raw))
 
     async def _check_crm(self, job: Job) -> bool:
         prospect = await self.d.store.get_prospect(job.linkedin_url_norm)
@@ -217,14 +246,8 @@ class Runner:
         url_norm = normalise_linkedin_url(payload.linkedin_url)
         if url_norm is None:
             raise ValueError(f"callback carries no LinkedIn profile URL: {payload.linkedin_url!r}")
-        if payload.company.domain:
-            await self.d.store.upsert_company(Company(**payload.company.model_dump(),
-                                                      raw=payload.company.model_dump(mode="json")))
-        await self.d.store.upsert_prospect(Prospect(
-            linkedin_url_norm=url_norm, name=payload.person.full_name, title=payload.person.title,
-            email=payload.person.email, location=payload.person.location,
-            role_started_on=payload.person.role_started_on, company_domain=payload.company.domain,
-            enriched_at=self.d.now(), source="clay", raw=payload.model_dump(mode="json")))
+        await self.store_enrichment(url_norm, payload.person, payload.company, raw=payload.model_dump(mode="json"),
+                                    source="clay")
         resumed = 0
         for job in await self.d.store.enriching_jobs(url_norm):
             if await self.d.store.transition(job.id, Status.ENRICHING, Status.ENRICHED):

@@ -52,6 +52,7 @@ class Company(BaseModel):
     name: str | None = None
     industry: str | None = None
     employee_count: int | None = None
+    employee_range: str | None = None
     country: str | None = None
     description: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)

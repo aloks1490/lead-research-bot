@@ -1,6 +1,8 @@
 """All configuration comes from environment variables (or a local .env file). Nothing is hard-coded elsewhere."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +14,12 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_base_url: str = "https://slack.com/api"
     slack_alert_channel: str = "#lead-research-alerts"
+
+    # Enrichment: who turns a LinkedIn URL into a person and a company. "treg" answers in the same request;
+    # "clay" needs a paid Clay plan (webhook source + HTTP API column) and calls back later.
+    enrichment_provider: Literal["treg", "clay"] = "treg"
+    treg_token: str = ""
+    treg_base_url: str = "https://treg.to"
 
     # Clay: we POST to a table's webhook source; an HTTP API column in that table calls us back.
     clay_webhook_url: str = ""
@@ -49,7 +57,7 @@ class Settings(BaseSettings):
     enrich_timeout_minutes: int = 10
     stuck_job_minutes: int = 5
     sweep_interval_seconds: int = 300  # how often the bot runs its own sweep; 0 turns it off
-    max_attempts: int = 5  # runs per job. A normal cache-miss job uses 2: one up to Clay, one after the callback.
+    max_attempts: int = 5  # runs per job. A cache-miss job uses 1 with treg, 2 with Clay (before and after callback)
     internal_secret: str = ""  # header secret for POST /internal/sweep
 
     # Who is selling. This goes into the fact sheet, so the brief may mention it.

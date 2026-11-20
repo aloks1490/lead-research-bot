@@ -1,5 +1,9 @@
 # Clay table setup
 
+> **Only for a paid Clay plan.** Clay's free plan does not include the webhook source or the HTTP API column, so
+> the bot uses treg by default (`ENRICHMENT_PROVIDER=treg`, see the README). Set `ENRICHMENT_PROVIDER=clay` to use
+> the setup below.
+
 The bot sends a row to a Clay table and Clay posts the enriched row back. One table, three parts.
 
 ## 1. Source: a webhook

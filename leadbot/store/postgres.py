@@ -123,10 +123,12 @@ class PostgresStore:
         params = company.model_dump()
         params["raw"] = Jsonb(params["raw"])
         await self._count(
-            """insert into companies (domain, name, industry, employee_count, country, description, raw)
-               values (%(domain)s, %(name)s, %(industry)s, %(employee_count)s, %(country)s, %(description)s, %(raw)s)
+            """insert into companies (domain, name, industry, employee_count, employee_range, country, description, raw)
+               values (%(domain)s, %(name)s, %(industry)s, %(employee_count)s, %(employee_range)s, %(country)s,
+                       %(description)s, %(raw)s)
                on conflict (domain) do update set
                    name = excluded.name, industry = excluded.industry, employee_count = excluded.employee_count,
+                   employee_range = excluded.employee_range,
                    country = excluded.country, description = excluded.description, raw = excluded.raw,
                    updated_at = now()""",
             params)

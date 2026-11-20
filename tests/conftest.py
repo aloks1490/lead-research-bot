@@ -26,6 +26,7 @@ from leadbot.store.memory import MemoryStore
 SLACK = "https://slack.test/api"
 HUBSPOT = "https://hubspot.test"
 CLAY_WEBHOOK = "https://clay.test/webhook/table-123"
+TREG = "https://treg.test"
 JANE_URL = "https://www.linkedin.com/in/Jane-Doe/?utm_source=share"
 JANE_NORM = "linkedin.com/in/jane-doe"
 
@@ -35,6 +36,8 @@ def settings() -> Settings:
         _env_file=None,
         slack_signing_secret="slack-secret", slack_bot_token="xoxb-test", slack_base_url=SLACK,
         clay_webhook_url=CLAY_WEBHOOK, clay_callback_secret="clay-secret",
+        # The pipeline tests below exercise the Clay route; tests/test_treg.py switches to treg.
+        enrichment_provider="clay", treg_token="treg-test", treg_base_url=TREG,
         hubspot_token="hs-test", hubspot_base_url=HUBSPOT,
         anthropic_api_key="test-key", internal_secret="sweep-secret", database_url="",
     )
@@ -147,6 +150,57 @@ class FakeHubSpot:
         return httpx.Response(404, json={"message": f"fake hubspot has no route for {method} {path}"})
 
 
+class FakeTreg:
+    """treg behind its real REST path: POST /call/<tool>. Answers come from the dicts below; anything else is a
+    miss (HTTP 200 with empty output), as treg answers it."""
+
+    def __init__(self, router: respx.MockRouter):
+        self.people: dict[str, dict] = {}       # LinkedIn URL -> BlitzAPI-style raw person
+        self.emails: dict[str, str] = {}        # LinkedIn URL -> email
+        self.companies: dict[str, dict] = {}    # company LinkedIn URL or domain -> company output
+        self.fail: dict[str, httpx.Response] = {}  # tool -> response to serve every time
+        self.calls: list[tuple[str, dict]] = []
+        router.route(url__startswith=f"{TREG}/call/").mock(side_effect=self._handle)
+
+    def add_person(self, url: str, name: str, roles: list[dict], email: str | None = None,
+                   city: str = "Berlin", country: str = "DE") -> None:
+        first, _, last = name.partition(" ")
+        self.people[url] = {"found": True, "person": {
+            "full_name": name, "first_name": first, "last_name": last, "about_me": "Filler text from the provider.",
+            "location": {"city": city, "country_code": country}, "linkedin_url": url, "experiences": roles}}
+        if email:
+            self.emails[url] = email
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        tool = request.url.path.removeprefix("/call/")
+        body = json.loads(request.content)
+        self.calls.append((tool, body))
+        assert request.headers["X-Treg-Token"] == "treg-test"
+        if tool in self.fail:
+            return self.fail[tool]
+        if tool == "treg.people.enrich":
+            raw = self.people.get(body["linkedin_url"])
+            person = (raw or {}).get("person") or {}
+            current = next((e for e in person.get("experiences", []) if e.get("job_is_current")), {})
+            output = {"full_name": person.get("full_name"), "title": current.get("job_title"),
+                      "company": current.get("company_name"), "company_domain": None,
+                      "linkedin_url": person.get("linkedin_url"), "location": None}
+            return self._answer(tool, output, raw or {"found": False}, hit=raw is not None, cost=0)
+        if tool == "treg.people.email.find":
+            email = self.emails.get(body["linkedin_url"])
+            return self._answer(tool, {"email": email}, {"found": bool(email)}, hit=bool(email), cost=0)
+        if tool == "treg.companies.enrich":
+            company = self.companies.get(body.get("linkedin_url") or body.get("domain"))
+            return self._answer(tool, company or {"name": None}, {}, hit=bool(company), cost=1150)
+        return httpx.Response(404, json={"error": f"no tool {tool}"}, headers={"X-Treg-Error": "1"})
+
+    @staticmethod
+    def _answer(tool: str, output: dict, raw: dict, *, hit: bool, cost: int) -> httpx.Response:
+        meta = {"served_by": f"fake.{tool}", "outcome": "hit" if hit else "miss"}
+        headers = {"X-Treg-Served-By": f"fake.{tool}", "X-Treg-Cost-Micro": str(cost if hit else 0)}
+        return httpx.Response(200, json={"output": output, "raw": raw, "_treg": meta}, headers=headers)
+
+
 class World:
     def __init__(self):
         self.settings = settings()
@@ -159,6 +213,7 @@ class World:
         self.slack_route = self.router.post(f"{SLACK}/chat.postMessage").mock(side_effect=self._slack)
         self.clay_route = self.router.post(CLAY_WEBHOOK).mock(side_effect=self._clay)
         self.hubspot = FakeHubSpot(self.router)
+        self.treg = FakeTreg(self.router)
         self.claude = FakeClaude()
         self.http_client = httpx.AsyncClient(transport=httpx.MockTransport(self.router.async_handler))
         self.runner = self.new_runner()

@@ -10,11 +10,12 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from leadbot.http import HttpClient
 
 TIMEOUT = 10.0
+_RANGE = re.compile(r"\d[\d,]*\s*(?:[-–]\s*\d[\d,]*|\+)")
 
 
 class Clay:
@@ -41,6 +42,7 @@ def _blank_to_none(value: Any) -> Any:
 
 
 class ClayPerson(BaseModel):
+    """A person as an enrichment source describes them. Shared by every source (Clay, treg)."""
     full_name: str | None = None
     title: str | None = None
     email: str | None = None
@@ -70,19 +72,31 @@ class ClayPerson(BaseModel):
 
 
 class ClayCompany(BaseModel):
+    """A company as an enrichment source describes it. Shared by every source (Clay, treg)."""
     name: str | None = None
     domain: str | None = None
     industry: str | None = None
     employee_count: int | None = None
+    employee_range: str | None = None  # "51-200" or "10,001+": sources often give a size band, not a number
     country: str | None = None
     description: str | None = None
 
     _clean = field_validator("*", mode="before")(_blank_to_none)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _split_range(cls, data: Any) -> Any:
+        """A size band in employee_count moves to employee_range, so it is kept instead of dropped."""
+        if isinstance(data, dict) and isinstance(data.get("employee_count"), str):
+            value = data["employee_count"].strip()
+            if _RANGE.fullmatch(value):
+                data = {**data, "employee_range": value.replace(" ", ""), "employee_count": None}
+        return data
+
     @field_validator("employee_count", mode="before")
     @classmethod
     def _parse_count(cls, value: Any) -> Any:
-        """'1,200' -> 1200. A range such as '201-500' is not one number, so it becomes None (it stays in `raw`)."""
+        """'1,200' -> 1200. A range such as '201-500' was moved to employee_range by _split_range."""
         if isinstance(value, str):
             digits = value.replace(",", "").strip()
             return int(digits) if digits.isdigit() else None
