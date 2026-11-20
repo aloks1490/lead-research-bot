@@ -1,5 +1,7 @@
 # Lead-Research Bot
 
+[![CI](https://github.com/aloks1490/lead-research-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/aloks1490/lead-research-bot/actions/workflows/ci.yml)
+
 AEs lose time researching people they should not contact, or researching the same person twice.
 This bot fixes both: mention it in Slack with a LinkedIn URL and, about a minute later, the thread holds a
 research brief that **opens with whether to reach out at all**. The same brief is saved as a note in HubSpot.
