@@ -42,7 +42,7 @@ Every request is one row in `research_jobs`. Each step does its work, then moves
 | `normalised` | URL cleaned to `linkedin.com/in/<slug>`, "Researching..." posted. Anything else: friendly reply, `rejected` | [urls.py](leadbot/urls.py) |
 | `cache_hit` / `cache_miss` | `prospects` looked up by normalised URL; fresh means enriched within 30 days | [jobs.py](leadbot/jobs.py) |
 | `enriched` | Cache miss only: treg looks up the person, then their work email and company at the same time; results upserted into `prospects` and `companies` | [treg.py](leadbot/treg.py) |
-| `checked` | HubSpot read; suppression verdict computed in code and stored | [hubspot.py](leadbot/hubspot.py), [suppression.py](leadbot/suppression.py) |
+| `checked` | HubSpot read; the CRM verdict and the fit computed in code and stored | [hubspot.py](leadbot/hubspot.py), [suppression.py](leadbot/suppression.py), [fit.py](leadbot/fit.py) |
 | `briefed` | Fact sheet → model → fact checker; template brief if anything fails | [brief.py](leadbot/brief.py), [check.py](leadbot/check.py) |
 | `done` | Brief posted in the thread; contact created if new; note attached to contact and company | [jobs.py](leadbot/jobs.py) |
 | `failed` | A step ran out of retries: apology in the thread, alert with `job_id` in `#lead-research-alerts` | [jobs.py](leadbot/jobs.py) |
@@ -54,12 +54,23 @@ because the AE needs that more than the research.
 
 The model writes words. Code decides everything else.
 
-- **Suppression** is four plain functions in [suppression.py](leadbot/suppression.py): do-not-contact, open deal,
-  existing customer, contacted in the last 30 days. First match wins. Adding a rule is one function and one test.
+- **Two decisions, both in code, shown first in every brief.**
+  - *CRM conflict* ([suppression.py](leadbot/suppression.py)): four rules (do-not-contact, open deal, existing
+    customer, contacted in the last 30 days). First match wins, and the brief says "Hold" with the reason.
+    Otherwise it says "No conflict in HubSpot", not "OK to reach out": an empty CRM is not a recommendation.
+  - *Fit* ([fit.py](leadbot/fit.py)): is this a likely buyer at all? Three checks against the seller's target
+    customer: the company's country is a target market, its size is inside the target range, and the person's
+    title is a buying role. Any failed check makes the fit "weak", too little data makes it "unknown", each with
+    plain-English reasons. The target is configuration (`FIT_COUNTRIES`, `FIT_MIN_EMPLOYEES`,
+    `FIT_MAX_EMPLOYEES`, `FIT_BUYER_TITLES`), so another seller changes settings, not code.
+
+  This was added after the first real mentions: the CRM check alone said "OK to reach out" to an engineer in
+  India with no company and to a 1-10 person US agency, because neither was in HubSpot. Both now come back
+  "Fit: weak", and the brief says what to check instead of pitching.
 - **The model only sees a fact sheet** built by [facts.py](leadbot/facts.py) from the cache and HubSpot. The verdict
   is already in it.
 - **The prompt is a file, not code.** [leadbot/prompts/brief.md](leadbot/prompts/brief.md) holds the rules, the
-  output schema and three worked examples, loaded by [skill.py](leadbot/skill.py). Every answer is validated
+  output schema and four worked examples, loaded by [skill.py](leadbot/skill.py). Every answer is validated
   against that schema before it is fact-checked, and every stored brief records which prompt version wrote it.
   Tests check that each worked example passes the bot's own checker, so a broken prompt fails CI.
 - **The model is a setting.** [brief.py](leadbot/brief.py) has two providers behind one interface: any
@@ -126,7 +137,7 @@ kept as text, and when someone holds several current roles the first one on the 
 | Forged or replayed webhook | Slack: HMAC signature and a 5-minute timestamp window. Clay: shared-secret header. Both answer 401 | `test_forged_slack_request_is_rejected`, `test_replayed_...`, `test_clay_callback_with_a_wrong_secret_is_rejected` |
 | HubSpot or Slack rate limit (429), server error (5xx) | One shared client ([http.py](leadbot/http.py)): waits for `Retry-After`, else exponential backoff with jitter, 4 tries | `test_hubspot_rate_limit_is_retried_after_the_given_wait` |
 | Model rate limit (429) or overload | NIM-style endpoints go through the shared client; Claude through the Anthropic SDK, which applies the same policy (4 tries, 60 s timeout). If it still fails, the template brief goes out | `test_rate_limited_model_is_retried_by_the_shared_client`, `test_a_claude_outage_falls_back_to_the_template` |
-| Slow or hung API | A timeout on every call: 10 s for Slack, Clay and HubSpot, 60 s for the model, 90 s for treg (a lookup that finds nobody tries every provider, about 40 s) | `test_a_timeout_is_retried` |
+| Slow or hung API | A timeout on every call: 10 s for Slack, Clay and HubSpot, 60 s for the model, 90 s for treg's person lookup and 45 s for its email and company lookups, each tried once: a lookup that finds nobody makes treg try every provider, and retrying it only repeats that wait (on the first real run, 4 retries turned one slow email miss into 6 minutes) | `test_a_timeout_is_retried` |
 | Clay never calls back (Clay route only) | The bot sweeps itself every 5 minutes and fails jobs stuck in `enriching` for over 10 minutes. (A GitHub Actions schedule was tried first: it ran every 5 to 8 hours, not every 5 minutes.) | `test_clay_that_never_calls_back_is_timed_out_by_the_sweeper` |
 | Clay calls back late (Clay route only) | The data is still cached, so the next request for that person costs nothing | `test_late_clay_callback_is_still_cached` |
 | The model invents a fact or changes the verdict | Checker rejects it; template brief instead; `fallback_reason` stored | `test_invented_facts_are_rejected...`, `test_the_model_cannot_change_the_verdict` |
@@ -144,7 +155,7 @@ kept as text, and when someone holds several current roles the first one on the 
 {"ts": "...", "level": "INFO", "logger": "leadbot.http", "msg": "api call", "job_id": "ab461d7b-...", "step": "check_crm", "service": "hubspot", "endpoint": "/crm/v3/objects/contacts/search", "attempt": 1, "status_code": 200, "duration_ms": 87}
 ```
 
-**Tests.** 142 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
+**Tests.** 193 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
 clients, retries and parsers are exercised. The data-layer tests run twice: against the in-memory store, and in
 CI against a real Postgres container.
 

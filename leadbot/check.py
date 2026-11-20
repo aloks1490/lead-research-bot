@@ -98,8 +98,10 @@ def _is_known(word: str, known: set[str]) -> bool:
 def _shape_problems(out: dict, facts: dict) -> list[str]:
     problems = []
     for name in TEXT_FIELDS:
-        if not isinstance(out.get(name), str) or not out[name].strip():
+        if not isinstance(out.get(name), str):
             problems.append(f"{name} missing")
+        elif not out[name].strip() and not (name == "company" and not facts.get("company")):
+            problems.append(f"{name} missing")  # empty is only right for "company", when no company is known
     if isinstance(out.get("headline"), str) and len(out["headline"]) > MAX_HEADLINE_CHARS:
         problems.append("headline too long")
     questions = out.get("questions")

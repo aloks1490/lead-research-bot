@@ -25,7 +25,11 @@ from leadbot.http import ApiError, HttpClient
 
 log = logging.getLogger("leadbot.treg")
 
-TIMEOUT = 90.0  # a miss tries every provider in turn; measured at ~40 s
+# A call that finds nobody makes treg try every provider in turn: 40 s for a person, minutes for an email. So each
+# call gets one try (no retry after a timeout: it would repeat the whole provider list) and a fixed budget.
+# Measured on a real profile: retrying a timed-out email lookup 4 times turned a 90 s miss into 6 minutes.
+PERSON_TIMEOUT = 90.0
+OPTIONAL_TIMEOUT = 45.0  # email and company: the brief can be written without them
 FREEMAIL = {"gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "icloud.com",
             "me.com", "aol.com", "proton.me", "protonmail.com", "gmx.de", "gmx.net", "web.de"}
 MAX_DESCRIPTION = 300  # providers return whole "about" pages; the brief needs one or two sentences
@@ -59,7 +63,10 @@ def _current_role(raw: dict) -> dict:
 
 
 def _location(raw: dict, fallback: str | None) -> str | None:
-    place = ((raw or {}).get("person") or {}).get("location") or {}
+    profile = (raw or {}).get("person") or (raw or {}).get("data") or {}  # BlitzAPI or Crawl4AI format
+    place = profile.get("location") or {}
+    if not isinstance(place, dict):
+        return fallback
     parts = [place.get("city"), place.get("country_code")]
     return ", ".join(p for p in parts if p) or fallback
 
@@ -71,10 +78,10 @@ class Treg:
         self.base_url = base_url.rstrip("/")
         self.headers = {"X-Treg-Token": token, "Content-Type": "application/json"}
 
-    async def _call(self, tool: str, body: dict) -> tuple[dict, int]:
+    async def _call(self, tool: str, body: dict, timeout: float = PERSON_TIMEOUT) -> tuple[dict, int]:
         """One routed call. Returns (response JSON, cost in micro-dollars). Errors and retries: the shared client."""
         response = await self.http.request("treg", "POST", f"{self.base_url}/call/{tool}", endpoint=tool,
-                                           timeout=TIMEOUT, json=body, headers=self.headers)
+                                           timeout=timeout, retry_timeouts=False, json=body, headers=self.headers)
         data = response.json()
         cost = int(response.headers.get("X-Treg-Cost-Micro") or 0)
         log.info("treg answered", extra={"tool": tool, "outcome": (data.get("_treg") or {}).get("outcome"),
@@ -132,7 +139,7 @@ class Treg:
 
     async def _optional(self, tool: str, body: dict) -> tuple[dict, int]:
         try:
-            return await self._call(tool, body)
+            return await self._call(tool, body, timeout=OPTIONAL_TIMEOUT)
         except ApiError as e:
             log.warning("optional treg lookup failed, continuing without it",
                         extra={"tool": tool, "error_text": str(e)})

@@ -1,6 +1,7 @@
 """Slack Web API client and the Block Kit layout of a brief."""
 from __future__ import annotations
 
+from leadbot.fit import Fit
 from leadbot.http import ApiError, HttpClient
 
 TIMEOUT = 10.0
@@ -30,24 +31,32 @@ class Slack:
 
 # ---------- how a brief looks in the thread ----------
 
-def brief_text(brief: dict) -> str:
+FIT_ICONS = {"strong": ":dart:", "weak": ":warning:", "unknown": ":grey_question:"}
+
+
+def brief_text(brief: dict, fit: Fit) -> str:
     """Plain-text version: used for notifications and as the fallback when blocks cannot render."""
     # The model usually ends its hold reason with a full stop; strip it so the text never shows "customer..".
-    lead = f"HOLD: {brief['hold_reason'].rstrip('. ')}" if brief["verdict"] == "hold" else "OK to reach out"
-    return f"{lead}. {brief['headline']}"
+    lead = f"HOLD: {brief['hold_reason'].rstrip('. ')}" if brief["verdict"] == "hold" else "No conflict in HubSpot"
+    return f"{lead}. Fit: {fit.level}. {brief['headline']}"
 
 
-def brief_blocks(brief: dict, footer: str) -> list[dict]:
-    """A suppressed prospect opens with the reason not to reach out: the AE needs that more than the research."""
+def brief_blocks(brief: dict, footer: str, fit: Fit) -> list[dict]:
+    """The two decisions made in code come first: is there a reason not to reach out (HubSpot), and is this a
+    likely buyer at all (fit)? A hold opens with its reason: the AE needs that more than the research."""
     if brief["verdict"] == "hold":
         verdict = f":no_entry: *Hold: do not reach out.* {brief['hold_reason']}"
     else:
-        verdict = ":white_check_mark: *OK to reach out*"
+        verdict = ":white_check_mark: *No conflict in HubSpot*"
+    reasons = "\n".join(f"• {r}" for r in fit.reasons)
+    verdict += f"\n{FIT_ICONS.get(fit.level, '')} *Fit: {fit.level}*\n{reasons}"
     questions = "\n".join(f"• {q}" for q in brief["questions"])
     return [
         _section(verdict),
         _section(f"*{brief['headline']}*"),
-        _section(f"*Person*\n{brief['person']}\n\n*Company*\n{brief['company']}"),
+        # The company part is left out when nothing is known about the company (the model returns "").
+        _section(f"*Person*\n{brief['person']}" + (f"\n\n*Company*\n{brief['company']}" if brief["company"].strip()
+                                                     else "")),
         _section(f"*Angle*\n{brief['angle']}\n\n*Questions for the first call*\n{questions}"),
         {"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]},
     ]

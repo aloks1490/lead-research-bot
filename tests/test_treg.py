@@ -8,7 +8,7 @@ import pytest
 
 from leadbot.clay import ClayCompany
 from leadbot.store import Status
-from leadbot.treg import _short
+from leadbot.treg import _location, _short
 from tests.conftest import JANE_NORM
 
 JANE = f"https://www.{JANE_NORM}"
@@ -121,7 +121,51 @@ async def test_a_missing_token_fails_with_a_clear_error(treg_world):
     assert treg_world.treg.calls == []
 
 
+async def test_a_timed_out_email_lookup_is_not_retried(treg_world):
+    # Found on the first real run: a routed email lookup that found nobody ran past the time limit, and retrying
+    # it 4 times turned one slow miss into 6 minutes. treg already tries every provider inside one call.
+    w = treg_world
+    w.treg.add_person(JANE, "Jane Doe", [ROLE])
+    w.treg.companies[ACME_LI] = ACME
+    w.treg.fail["treg.people.email.find"] = httpx.ReadTimeout("slow")
+    await w.mention()
+    assert [tool for tool, _ in w.treg.calls].count("treg.people.email.find") == 1
+    assert w.job().status == Status.DONE and w.store.prospects[JANE_NORM].email is None
+
+
+async def test_a_timed_out_person_lookup_fails_after_one_try(treg_world):
+    treg_world.treg.fail["treg.people.enrich"] = httpx.ReadTimeout("slow")
+    await treg_world.mention()
+    assert [tool for tool, _ in treg_world.treg.calls] == ["treg.people.enrich"]
+    assert treg_world.job().status == Status.FAILED and "ReadTimeout" in treg_world.job().last_error
+
+
+async def test_a_person_with_no_company_still_gets_a_model_brief(treg_world):
+    # Also from the first real run: no company was found, the model rightly left "company" empty, and the
+    # checker wrongly rejected that.
+    w = treg_world
+    w.treg.add_person(JANE, "Jane Doe", [{**ROLE, "company_linkedin_url": None, "company_name": None}])
+    w.claude.reply = lambda facts: {
+        "verdict": "reach_out", "hold_reason": "", "headline": "Jane Doe is Head of Security.",
+        "person": "Head of Security in Berlin.", "company": "", "angle": "Ask how Jane handles audits today.",
+        "questions": ["How do you prepare for audits?", "Who owns compliance?"]}
+    await w.mention()
+    assert w.brief().facts["company"] == {}
+    assert (w.brief().source, w.brief().check_passed) == ("claude", True)
+    person_block = w.thread_messages()[-1]["blocks"][2]["text"]["text"]
+    assert "*Company*" not in person_block  # no empty heading in Slack
+
+
 # ---------- small pieces ----------
+
+@pytest.mark.parametrize("raw,expected", [
+    ({"person": {"location": {"city": "Berlin", "country_code": "DE"}}}, "Berlin, DE"),     # BlitzAPI
+    ({"data": {"location": {"city": "Pune City", "country_code": "IN"}}}, "Pune City, IN"),  # Crawl4AI
+    ({"data": {"location": "somewhere"}}, "fallback"), ({}, "fallback"),
+])
+def test_location_is_read_from_either_provider_format(raw, expected):
+    assert _location(raw, "fallback") == expected
+
 
 @pytest.mark.parametrize("value,count,band", [
     ("51-200", None, "51-200"), ("10,001+", None, "10,001+"), ("1,200", 1200, None), (183, 183, None),

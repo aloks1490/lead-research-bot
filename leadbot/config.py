@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     max_attempts: int = 5  # runs per job. A cache-miss job uses 1 with treg, 2 with Clay (before and after callback)
     internal_secret: str = ""  # header secret for POST /internal/sweep
 
+    # Fit: the seller's target customer (leadbot/fit.py). Defaults describe a European compliance-automation seller.
+    fit_countries: str = ("AT,BE,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IE,IT,LV,LT,LU,MT,NL,PL,PT,RO,SK,SI,ES,SE,"
+                          "GB,CH,NO,IS,LI")  # EU, UK, Switzerland, EEA
+    fit_min_employees: int = 20
+    fit_max_employees: int = 2000
+    fit_buyer_titles: str = ("security,ciso,cso,infosec,it,cto,cio,cdo,compliance,grc,risk,privacy,dpo,"
+                             "data protection,devops,platform,infrastructure,engineering,operations,coo,ceo,"
+                             "founder,co-founder,cofounder,owner,managing director,geschäftsführer")
+
     # Who is selling. This goes into the fact sheet, so the brief may mention it.
     seller_name: str = "Northwall"
     seller_pitch: str = "compliance automation for ISO 27001, SOC 2, GDPR and TISAX"

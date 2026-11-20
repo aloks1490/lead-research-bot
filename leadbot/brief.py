@@ -60,6 +60,13 @@ def template_brief(facts: dict) -> dict:
                     f"{company['employees']} employees" if company.get("employees") else None,
                     company.get("country")]
     company_line = ", ".join(str(b) for b in company_bits if b) or "No company details found"
+    fit = facts.get("fit") or {}
+    if facts["verdict"] == "reach_out" and fit.get("level") in ("weak", "unknown"):
+        # Same rule as the prompt: no pitch when the fit is weak or unknown, say what to check instead.
+        angle = "Check fit before reaching out: " + "; ".join(fit.get("reasons", [])) + "."
+    else:
+        angle = f"Ask how {company_name or 'their company'} handles the work that {seller['name']} covers: " \
+                f"{seller['sells']}."
     target = company_name or "their company"
     return {
         "verdict": facts["verdict"],
@@ -67,7 +74,7 @@ def template_brief(facts: dict) -> dict:
         "headline": who,
         "person": person_line,
         "company": (f"{company_name}: " if company_name else "") + company_line,
-        "angle": f"Ask how {target} handles the work that {seller['name']} covers: {seller['sells']}.",
+        "angle": angle,
         "questions": [
             f"How does {target} handle this today?",
             "What would have to be true for a change to be worth it this year?",

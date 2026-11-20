@@ -36,7 +36,9 @@ async def test_new_profile_is_enriched_briefed_and_written_to_hubspot(world):
     # The brief is a reply in the AE's thread.
     posted = world.thread_messages()[-1]
     assert posted["thread_ts"] == job.thread_ts
-    assert "OK to reach out" in posted["blocks"][0]["text"]["text"]
+    decisions = posted["blocks"][0]["text"]["text"]
+    assert "No conflict in HubSpot" in decisions
+    assert "*Fit: strong*" in decisions and "Germany is a target market" in decisions
     assert "Jane Doe" in posted["blocks"][1]["text"]["text"]
 
     # HubSpot: a new contact, and one note attached to both the contact and the company.

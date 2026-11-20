@@ -158,7 +158,7 @@ class FakeTreg:
         self.people: dict[str, dict] = {}       # LinkedIn URL -> BlitzAPI-style raw person
         self.emails: dict[str, str] = {}        # LinkedIn URL -> email
         self.companies: dict[str, dict] = {}    # company LinkedIn URL or domain -> company output
-        self.fail: dict[str, httpx.Response] = {}  # tool -> response to serve every time
+        self.fail: dict[str, httpx.Response | Exception] = {}  # tool -> response to serve, or exception to raise
         self.calls: list[tuple[str, dict]] = []
         router.route(url__startswith=f"{TREG}/call/").mock(side_effect=self._handle)
 
@@ -177,6 +177,8 @@ class FakeTreg:
         self.calls.append((tool, body))
         assert request.headers["X-Treg-Token"] == "treg-test"
         if tool in self.fail:
+            if isinstance(self.fail[tool], Exception):
+                raise self.fail[tool]
             return self.fail[tool]
         if tool == "treg.people.enrich":
             raw = self.people.get(body["linkedin_url"])

@@ -60,9 +60,12 @@ class HttpClient:
         endpoint: str,
         timeout: float,
         ok: tuple[int, ...] = (200, 201, 204),
+        retry_timeouts: bool = True,
         **kwargs,
     ) -> httpx.Response:
-        """`endpoint` is a short label for logs and errors. It is passed in because some URLs hold secrets."""
+        """`endpoint` is a short label for logs and errors. It is passed in because some URLs hold secrets.
+        `retry_timeouts=False` is for calls that already try many backends inside one request (treg): repeating
+        a timed-out call only repeats the wait."""
         for attempt in range(1, self.max_tries + 1):
             started = time.monotonic()
             status: int | None = None
@@ -77,7 +80,10 @@ class HttpClient:
                 detail = response.text
                 retry_after = _retry_after(response)
                 retryable = status in RETRY_STATUSES
-            except (httpx.TimeoutException, httpx.TransportError) as e:
+            except httpx.TimeoutException as e:
+                detail = f"{type(e).__name__}: {e}"
+                retryable = retry_timeouts
+            except httpx.TransportError as e:
                 detail = f"{type(e).__name__}: {e}"
                 retryable = True
             self._log(service, endpoint, attempt, status, started, failed=True)

@@ -11,7 +11,10 @@ import pytest
 
 from leadbot.brief import Briefer, ClaudeWriter
 from leadbot.check import check
+from leadbot.config import Settings
 from leadbot.facts import build_facts
+from leadbot.fit import Fit, Target
+from leadbot.fit import evaluate as evaluate_fit
 from leadbot.hubspot import CrmState
 from leadbot.skill import SkillError, load, parse
 from leadbot.store import Company, Prospect
@@ -24,8 +27,8 @@ SKILL = load()
 
 
 def test_the_brief_skill_loads():
-    assert SKILL.name == "brief" and SKILL.version == "2"
-    assert SKILL.prompt_version.startswith("brief@2+")
+    assert SKILL.name == "brief" and SKILL.version == "4"
+    assert SKILL.prompt_version.startswith("brief@4+")
     assert len(SKILL.examples) >= 2
     assert {e.answer["verdict"] for e in SKILL.examples} == {"reach_out", "hold"}  # both kinds are shown
 
@@ -40,9 +43,29 @@ def test_every_example_is_a_brief_the_bot_would_accept(example):
 @pytest.mark.parametrize("example", SKILL.examples, ids=lambda e: e.title)
 def test_example_facts_look_like_real_fact_sheets(example):
     real = build_facts(Prospect(linkedin_url_norm="x", name="A B", title="CTO", enriched_at=datetime.now(UTC)),
-                       Company(domain="x.io", name="X"), CrmState(), Verdict("reach_out"), today=date(2026, 11, 18),
+                       Company(domain="x.io", name="X"), CrmState(), Verdict("reach_out"), Fit("unknown"),
+                       today=date(2026, 11, 18),
                        seller_name="S", seller_pitch="p")
     assert set(example.facts) - {"hold_reason"} == set(real)  # same top-level keys as build_facts produces
+
+
+@pytest.mark.parametrize("example", SKILL.examples, ids=lambda e: e.title)
+def test_example_fit_is_what_the_code_would_decide(example):
+    # The examples teach the model what a fit looks like; they must show exactly what fit.py would compute.
+    person, company = example.facts["person"], example.facts["company"]
+    employees = company.get("employees")
+    fit = evaluate_fit(title=person.get("title"), person_location=person.get("location"),
+                       company_name=company.get("name"), company_country=company.get("country"),
+                       employees=employees if isinstance(employees, int) else None,
+                       employee_band=employees if isinstance(employees, str) else None,
+                       target=Target.from_settings(Settings(_env_file=None)))
+    assert example.facts["fit"] == {"level": fit.level, "reasons": fit.reasons}
+
+
+def test_weak_fit_examples_do_not_pitch():
+    for example in SKILL.examples:
+        if example.answer["verdict"] == "reach_out" and example.facts["fit"]["level"] != "strong":
+            assert example.answer["angle"].lower().startswith("check fit"), example.title
 
 
 def test_hold_examples_do_not_pitch():

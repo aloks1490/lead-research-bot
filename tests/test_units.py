@@ -138,6 +138,20 @@ async def test_it_stops_after_four_tries():
     assert len(calls) == 4 and error.value.status == 500 and "boom" in str(error.value)
 
 
+async def test_a_timeout_can_be_left_unretried():
+    client, calls, _ = make_http([httpx.ReadTimeout("slow"), httpx.Response(200)])
+    with pytest.raises(ApiError):
+        await client.request("treg", "POST", "https://api.test/x", endpoint="/x", timeout=1, retry_timeouts=False)
+    assert len(calls) == 1
+
+
+def test_an_empty_company_is_right_only_when_no_company_is_known():
+    no_company = {**FACTS, "company": {}}
+    assert check({**GOOD, "company": "", "headline": "Jörg Müller-Schmidt is Head of Security.",
+                  "angle": "Ask how the team prepares for ISO 27001 audits."}, no_company) == []
+    assert "company missing" in check({**GOOD, "company": ""}, FACTS)
+
+
 async def test_a_client_error_is_not_retried():
     client, calls, sleeps = make_http([httpx.Response(400, text="bad property")])
     with pytest.raises(ApiError):

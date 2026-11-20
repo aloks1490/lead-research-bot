@@ -23,6 +23,8 @@ from leadbot.brief import Briefer
 from leadbot.clay import Clay, ClayCallback, ClayCompany, ClayPerson
 from leadbot.config import Settings
 from leadbot.facts import build_facts
+from leadbot.fit import Fit, Target
+from leadbot.fit import evaluate as evaluate_fit
 from leadbot.hubspot import CrmState, HubSpot
 from leadbot.logs import job_id_var, timed_step
 from leadbot.slack import Slack
@@ -54,6 +56,7 @@ class Runner:
     def __init__(self, deps: Deps):
         self.d = deps
         self._limit = asyncio.Semaphore(deps.settings.max_concurrent_jobs)
+        self._target = Target.from_settings(deps.settings)
         self._tasks: dict[str, asyncio.Task] = {}
         # status -> (step name for logs, function). A status with no entry is terminal or waiting on Clay.
         self._steps = {
@@ -183,10 +186,17 @@ class Runner:
         crm = await self.d.hubspot.lookup(prospect.email, prospect.company_domain)
         verdict = evaluate(crm, Context(today=self.d.now().date(),
                                         recent_contact_days=self.d.settings.recent_contact_days))
-        log.info("suppression verdict", extra={"verdict": verdict.verdict, "rule": verdict.rule})
+        company = await self.d.store.get_company(prospect.company_domain) if prospect.company_domain else None
+        fit = evaluate_fit(title=prospect.title, person_location=prospect.location,
+                           company_name=company.name if company else None,
+                           company_country=company.country if company else None,
+                           employees=company.employee_count if company else None,
+                           employee_band=company.employee_range if company else None, target=self._target)
+        log.info("suppression verdict", extra={"verdict": verdict.verdict, "rule": verdict.rule, "fit": fit.level})
+        # Both decisions are stored with the CRM state they came from, so a brief can always be explained later.
         await self.d.store.upsert_brief(job.id, prospect_id=prospect.id, suppression={
             "verdict": verdict.verdict, "reason": verdict.reason, "rule": verdict.rule, "crm": crm.to_dict(),
-            "cache": "hit" if job.status == Status.CACHE_HIT else "miss"})
+            "fit": fit.to_dict(), "cache": "hit" if job.status == Status.CACHE_HIT else "miss"})
         return await self._move(job, Status.CHECKED)
 
     async def _write_brief(self, job: Job) -> bool:
@@ -196,6 +206,7 @@ class Runner:
         facts = build_facts(
             prospect, company, CrmState.from_dict(suppression["crm"]),
             Verdict(suppression["verdict"], suppression["reason"], suppression["rule"]),
+            Fit.from_dict(suppression.get("fit")),
             today=self.d.now().date(), seller_name=self.d.settings.seller_name,
             seller_pitch=self.d.settings.seller_pitch)
         result = await self.d.briefer.write(facts)
@@ -216,11 +227,12 @@ class Runner:
         saving its marker can still repeat that one call: delivery is at-least-once, not exactly-once."""
         record = await self.d.store.get_brief(job.id)
         brief, suppression = record.brief, record.suppression
+        fit = Fit.from_dict(suppression.get("fit"))
         if not record.slack_ts:
             written_by = "template" if record.source == "template" else record.model
             footer = f"cache {suppression['cache']} · written by {written_by} · job `{job.id}`"
-            ts = await self.d.slack.post(job.channel, slack_ui.brief_text(brief), thread_ts=job.thread_ts,
-                                         blocks=slack_ui.brief_blocks(brief, footer))
+            ts = await self.d.slack.post(job.channel, slack_ui.brief_text(brief, fit), thread_ts=job.thread_ts,
+                                         blocks=slack_ui.brief_blocks(brief, footer, fit))
             await self.d.store.upsert_brief(job.id, slack_ts=ts)
         if not record.hubspot_note_id:
             prospect = await self.d.store.get_prospect(job.linkedin_url_norm)
@@ -231,7 +243,7 @@ class Runner:
                 company_name=company.name if company else None,
                 linkedin_url=f"https://www.{prospect.linkedin_url_norm}")
             if contact_id or crm.company_id:
-                note_id = await self.d.hubspot.create_note(note_html(brief, job), self.d.now(), contact_id,
+                note_id = await self.d.hubspot.create_note(note_html(brief, job, fit), self.d.now(), contact_id,
                                                            crm.company_id)
                 await self.d.store.upsert_brief(job.id, hubspot_note_id=note_id)
             else:
@@ -321,11 +333,12 @@ class Runner:
                 log.exception("sweep failed, trying again next interval")
 
 
-def note_html(brief: dict, job: Job) -> str:
+def note_html(brief: dict, job: Job, fit: Fit) -> str:
     """The brief as a HubSpot note body (HubSpot notes take simple HTML)."""
     e = html.escape
     lead = (f"<strong>Hold: do not reach out.</strong> {e(brief['hold_reason'])}" if brief["verdict"] == "hold"
-            else "<strong>OK to reach out</strong>")
+            else "<strong>No conflict in HubSpot.</strong>")
+    lead += f" <strong>Fit: {e(fit.level)}.</strong> {e('; '.join(fit.reasons))}"
     questions = "".join(f"<li>{e(q)}</li>" for q in brief["questions"])
     return (f"<p><strong>Lead research brief</strong></p><p>{lead}</p><p>{e(brief['headline'])}</p>"
             f"<p><strong>Person:</strong> {e(brief['person'])}<br><strong>Company:</strong> {e(brief['company'])}</p>"

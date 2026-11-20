@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from leadbot.fit import Fit
 from leadbot.hubspot import CrmState
 from leadbot.store import Company, Prospect
 from leadbot.suppression import Verdict
@@ -31,8 +32,8 @@ def _drop_empty(data: dict) -> dict:
     return {k: v for k, v in data.items() if v not in (None, "", [], {})}
 
 
-def build_facts(prospect: Prospect, company: Company | None, crm: CrmState, verdict: Verdict, *, today: date,
-                seller_name: str, seller_pitch: str) -> dict:
+def build_facts(prospect: Prospect, company: Company | None, crm: CrmState, verdict: Verdict, fit: Fit, *,
+                today: date, seller_name: str, seller_pitch: str) -> dict:
     facts = {
         "seller": {"name": seller_name, "sells": seller_pitch},
         "person": _drop_empty({
@@ -56,6 +57,8 @@ def build_facts(prospect: Prospect, company: Company | None, crm: CrmState, verd
         }),
         # Decided in code (suppression.py). The model must copy the verdict, never change it.
         "verdict": verdict.verdict,
+        # Also decided in code (fit.py): is this a likely buyer at all? The model explains it, never changes it.
+        "fit": {"level": fit.level, "reasons": fit.reasons},
     }
     if verdict.reason:
         facts["hold_reason"] = verdict.reason

@@ -40,6 +40,8 @@ from leadbot.brief import OpenAICompatWriter, parse_json_reply
 from leadbot.check import check
 from leadbot.config import Settings
 from leadbot.facts import build_facts
+from leadbot.fit import Target
+from leadbot.fit import evaluate as evaluate_fit
 from leadbot.hubspot import CrmState, OpenDeal
 from leadbot.store import Company, Prospect
 from leadbot.suppression import Context, evaluate
@@ -67,7 +69,14 @@ def cases(settings: Settings) -> dict[str, dict]:
         "reach_out_2": (omar, globex, CrmState()),
         "hold_recent": (omar, globex, CrmState(contact_id="7", last_contacted=date(2026, 11, 5))),
     }
-    return {name: build_facts(p, c, crm, evaluate(crm, Context(TODAY)), today=TODAY,
+    target = Target.from_settings(settings)
+
+    def fit_of(p: Prospect, c: Company):
+        return evaluate_fit(title=p.title, person_location=p.location, company_name=c.name,
+                            company_country=c.country, employees=c.employee_count, employee_band=c.employee_range,
+                            target=target)
+
+    return {name: build_facts(p, c, crm, evaluate(crm, Context(TODAY)), fit_of(p, c), today=TODAY,
                               seller_name=settings.seller_name, seller_pitch=settings.seller_pitch)
             for name, (p, c, crm) in raw.items()}
 
