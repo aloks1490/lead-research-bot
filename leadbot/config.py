@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2000  # reasoning models spend part of this thinking before they answer
     llm_extra_body: str = ""  # optional JSON merged into each request, for model-specific switches
 
+    # The reviewer (leadbot/review.py): a second model on the same endpoint that reads each brief for claims the
+    # facts do not support. Empty = no review. Pick a different model family from LLM_MODEL.
+    review_model: str = ""
+
     # Model provider 2: Claude. With no key for either provider, every brief comes from the template.
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-5-5"

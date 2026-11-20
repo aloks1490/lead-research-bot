@@ -75,6 +75,18 @@ class Skill:
         return problems
 
 
+def parse_json_reply(text: str) -> dict:
+    """The JSON object in a model reply that may carry code fences or stray prose around it."""
+    text = re.sub(r"```(?:json)?", "", text)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("no JSON object in reply")
+    out = json.loads(text[start:end + 1])
+    if not isinstance(out, dict):
+        raise ValueError("reply is not a JSON object")
+    return out
+
+
 def _dump(value: dict) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False)  # byte-stable, so prompt caching can work
 

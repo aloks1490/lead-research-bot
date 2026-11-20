@@ -86,12 +86,13 @@ class BriefRecord(BaseModel):
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     prompt_version: str | None = None
+    review: dict[str, Any] | None = None
     slack_ts: str | None = None
     hubspot_note_id: str | None = None
 
 
 BRIEF_COLUMNS = tuple(name for name in BriefRecord.model_fields if name != "job_id")
-JSON_COLUMNS = {"suppression", "facts", "brief"}
+JSON_COLUMNS = {"suppression", "facts", "brief", "review"}
 
 
 class Store(Protocol):

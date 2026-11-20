@@ -80,6 +80,14 @@ The model writes words. Code decides everything else.
 - **The fact checker** rejects a brief if any number, capitalised name or date is not in the fact sheet, if the
   model changed the verdict, or if it runs over 120 words. A rejected brief is replaced by a template built from
   the same facts, and the reason is stored in `briefs.fallback_reason`.
+- **The reviewer** ([review.py](leadbot/review.py), prompt in [prompts/review.md](leadbot/prompts/review.md)) is a
+  second model that reads each brief for meaning, because the checker only matches words. Real briefs passed the
+  checker while saying a company was "a startup that will need compliance automation as it scales" or that
+  "early-stage biotechs use Northwall", none of it in the facts. The reviewer lists such claims, each quoted from
+  the brief (a quote that is not really in the brief is dropped), and any claim sends the template instead. If
+  the reviewer cannot answer, the brief goes out on the checker's word and the review is stored as skipped.
+  Every review is stored in `briefs.review`. Set with `REVIEW_MODEL`; the choice was measured
+  ([docs/model-benchmark.md](docs/model-benchmark.md#the-reviewer)).
 
 ## Numbers
 
@@ -155,7 +163,7 @@ kept as text, and when someone holds several current roles the first one on the 
 {"ts": "...", "level": "INFO", "logger": "leadbot.http", "msg": "api call", "job_id": "ab461d7b-...", "step": "check_crm", "service": "hubspot", "endpoint": "/crm/v3/objects/contacts/search", "attempt": 1, "status_code": 200, "duration_ms": 87}
 ```
 
-**Tests.** 193 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
+**Tests.** 206 tests run in about a second with every outside API mocked at the HTTP layer (respx), so the real
 clients, retries and parsers are exercised. The data-layer tests run twice: against the in-memory store, and in
 CI against a real Postgres container.
 

@@ -212,13 +212,14 @@ class Runner:
         result = await self.d.briefer.write(facts)
         log.info("brief written", extra={"source": result.source, "check_passed": result.check_passed,
                                          "prompt_version": result.prompt_version,
+                                         "review": (result.review or {}).get("status"),
                                          "input_tokens": result.input_tokens,
                                          "output_tokens": result.output_tokens})
         await self.d.store.upsert_brief(
             job.id, facts=facts, brief=result.brief, source=result.source, model=result.model,
             check_passed=result.check_passed, fallback_reason=result.fallback_reason,
             input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-            cache_read_tokens=result.cache_read_tokens, prompt_version=result.prompt_version)
+            cache_read_tokens=result.cache_read_tokens, prompt_version=result.prompt_version, review=result.review)
         return await self._move(job, Status.BRIEFED)
 
     async def _deliver(self, job: Job) -> bool:

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 
 import anthropic
@@ -25,6 +24,8 @@ import anthropic
 from leadbot import skill as skills
 from leadbot.check import check
 from leadbot.http import ApiError, HttpClient
+from leadbot.review import Reviewer
+from leadbot.skill import parse_json_reply  # noqa: F401  (re-exported: scripts use leadbot.brief.parse_json_reply)
 
 log = logging.getLogger("leadbot.brief")
 
@@ -43,6 +44,7 @@ class BriefResult:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     prompt_version: str | None = None  # which skill file wrote it, e.g. "brief@2+3f9a1c2d"; None for no model call
+    review: dict | None = None         # the reviewer's verdict (review.py), when a reviewer is configured
 
 
 # ---------- template fallback ----------
@@ -155,18 +157,6 @@ class ClaudeWriter:
             raise ModelError(f"claude returned no valid JSON: {type(e).__name__}", usage) from e
 
 
-def parse_json_reply(text: str) -> dict:
-    """The JSON object in a reply that may carry code fences or stray prose around it."""
-    text = re.sub(r"```(?:json)?", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("no JSON object in reply")
-    out = json.loads(text[start:end + 1])
-    if not isinstance(out, dict):
-        raise ValueError("reply is not a JSON object")
-    return out
-
-
 class OpenAICompatWriter:
     """Any endpoint that speaks the OpenAI chat-completions format (NVIDIA NIM, OpenRouter, ...).
     Calls go through the shared HttpClient, so they get the same timeout, retries and logging as HubSpot."""
@@ -231,8 +221,9 @@ class OpenAICompatWriter:
 
 
 class Briefer:
-    def __init__(self, writer: ClaudeWriter | OpenAICompatWriter | None):
+    def __init__(self, writer: ClaudeWriter | OpenAICompatWriter | None, reviewer: Reviewer | None = None):
         self.writer = writer
+        self.reviewer = reviewer
 
     @property
     def prompt_version(self) -> str | None:
@@ -245,16 +236,19 @@ class Briefer:
     @classmethod
     def from_settings(cls, settings, http: HttpClient) -> Briefer:
         """LLM_API_KEY + LLM_MODEL select the OpenAI-compatible endpoint. Otherwise ANTHROPIC_API_KEY selects
-        Claude. With neither, every brief comes from the template."""
+        Claude. With neither, every brief comes from the template. REVIEW_MODEL (on the same OpenAI-compatible
+        endpoint) adds the reviewer after the fact checker; empty means no review."""
+        extra = json.loads(settings.llm_extra_body) if settings.llm_extra_body.strip() else None
+        reviewer = (Reviewer(http, settings.llm_base_url, settings.llm_api_key, settings.review_model, extra)
+                    if settings.review_model and settings.llm_api_key else None)
         if settings.llm_api_key and settings.llm_model:
-            extra = json.loads(settings.llm_extra_body) if settings.llm_extra_body.strip() else None
             return cls(OpenAICompatWriter(http, settings.llm_base_url, settings.llm_api_key, settings.llm_model,
-                                          settings.llm_max_tokens, extra))
+                                          settings.llm_max_tokens, extra), reviewer)
         if settings.anthropic_api_key:
             client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=TIMEOUT_SECONDS,
                                               max_retries=MAX_RETRIES)
             return cls(ClaudeWriter(client, settings.claude_model, settings.claude_max_tokens,
-                                    settings.claude_effort))
+                                    settings.claude_effort), reviewer)
         return cls(None)
 
     async def write(self, facts: dict) -> BriefResult:
@@ -273,10 +267,18 @@ class Briefer:
         if problems:
             log.warning("brief rejected by checker", extra={"problems": problems})
             return self._fallback(facts, "checker: " + "; ".join(problems), check_passed=False, **draft.usage)
+        # Third gate: a second model reads for meaning (review.py). The checker only matches words.
+        review = await self.reviewer.review(facts, draft.out) if self.reviewer else None
+        if review and review.status == "rejected":
+            claims = "; ".join(f'"{c["quote"]}" ({c["why"]})' for c in review.unsupported)
+            log.warning("brief rejected by reviewer", extra={"unsupported": review.unsupported})
+            return self._fallback(facts, "reviewer: " + claims, check_passed=False, review=review.to_dict(),
+                                  **draft.usage)
         return BriefResult(draft.out, self.writer.source, self.model, True, None, **draft.usage,
-                           prompt_version=self.prompt_version)
+                           prompt_version=self.prompt_version, review=review.to_dict() if review else None)
 
-    def _fallback(self, facts: dict, reason: str, *, check_passed: bool | None, **usage) -> BriefResult:
+    def _fallback(self, facts: dict, reason: str, *, check_passed: bool | None, review: dict | None = None,
+                  **usage) -> BriefResult:
         log.info("using template brief", extra={"fallback_reason": reason})
         return BriefResult(template_brief(facts), "template", self.model, check_passed, reason, **usage,
-                           prompt_version=self.prompt_version)
+                           prompt_version=self.prompt_version, review=review)

@@ -39,8 +39,8 @@ I read every brief. All three models kept to the facts well enough to pass the c
 ## What this found about the bot
 
 - **The checker only catches names, numbers and dates.** "A growing SaaS platform" passed although nothing in the
-  facts says the company is growing. Claims written in lower-case words are not checked. A stricter check would
-  need a second model call to judge the brief against the facts.
+  facts says the company is growing. Claims written in lower-case words are not checked. This led to the reviewer
+  (below).
 - **Reasoning is wasted on this task.** A 70 to 90 word brief from a 600-token fact sheet gains nothing from it,
   and it can push a call past the bot's 60-second timeout (it did once with Kimi).
 - **Free endpoints change underneath you.** Two of the five models were unusable on the day of the test. The
@@ -83,10 +83,44 @@ one JSON line per call: [benchmarks/](benchmarks).
   whether…", close to the worked example (60 to 83% similar). That is the intended structure, but it is
   formulaic. More varied examples would loosen it.
 
+## The reviewer
+
+A second model reads each brief against its fact sheet and lists unsupported claims
+([leadbot/review.py](../leadbot/review.py)). To choose it, 13 labelled briefs
+([scripts/reviewer_cases.py](../scripts/reviewer_cases.py)) were reviewed by each candidate: 7 real or realistic
+briefs with 8 invented claims ("a startup that will need compliance automation as it scales", "early-stage
+biotechs use Northwall", "likely needs ISO 27001 or GDPR proof for hospital customers"), and 6 clean briefs that
+must pass. **The word checker passes all 7 bad briefs.** Run on 2026-11-21 with
+[scripts/eval_reviewer.py](../scripts/eval_reviewer.py), reasoning off.
+
+| Model | Claims caught | Clean briefs wrongly rejected | Could not answer | Median | Note |
+| --- | --- | --- | --- | --- | --- |
+| **Nemotron 3.5 Super, review prompt v3** | **24/24** | **0/18** | 0 | 0.8 s | 3 runs; chosen |
+| Nemotron 3.5 Super, review prompt v2 | 24/24 | 1/18 | 0 | 0.7 s | 3 runs |
+| Nemotron 3.5 Super, review prompt v1 | 16/16 | 4/12 | 0 | 0.8 s | 2 runs |
+| MiniMax M3.1 Flash, prompt v1 | 13/16 | 0/12 | 14 of 26 | 0.5 s | rate-limited (HTTP 429) even alone |
+| Mistral Large 4 | – | – | most | ~40 s | 41.5 s for a one-line reply; too slow |
+| Gemma 4 31B | – | – | all | – | no answer within 90 s, even to a one-line request |
+
+- **The prompt mattered more than the model.** Prompt v1's false alarms were of three kinds: missing facts that
+  were there ("the facts do not state time in role"), rejecting fair paraphrases ("sales-tech" for "AI agents for
+  sales and marketing"), and treating "Only pitch if…" as a claim. v2 and v3 name each case and show a worked
+  example; false alarms went from 4/12 to 0/18 with no claim missed.
+- **Same family as the writer.** The aim was a reviewer from another model family, so it would not share the
+  writer's blind spots, but every other-family candidate was down, too slow or rate-limited on the day.
+- **Optimistic numbers.** The set is small and the prompt was tuned on it (one v2 example is close to a test
+  case). Production is the real test: every review is stored with its flagged claims in `briefs.review`.
+- **Live, locally:** three real profiles, reviews took 0.4–2.1 s. Before v3 the reviewer wrongly rejected Nico's
+  "small US sales-tech company outside Northwall's target markets", which restates the fit; with v3 it passes.
+
+Raw results: [benchmarks/reviewer-v1.jsonl](benchmarks/reviewer-v1.jsonl) (v1, with the parallel run's errors),
+[reviewer-v2.jsonl](benchmarks/reviewer-v2.jsonl), [reviewer-v3.jsonl](benchmarks/reviewer-v3.jsonl).
+
 ## Run it again
 
 ```bash
 uv run python scripts/benchmark_models.py                  # every LLM_MODEL line in .env, commented or not
 uv run python scripts/benchmark_models.py --repeat 3 moonshotai/kimi-k3.1-pro
 uv run python scripts/benchmark_models.py --thinking off --skill path/to/other-prompt.md   # compare a prompt change
+uv run python scripts/eval_reviewer.py --repeat 3 nvidia/nemotron-3.5-super-vl-120b-a12b      # score a reviewer model
 ```
