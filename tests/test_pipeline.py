@@ -1,6 +1,8 @@
 """End-to-end tests: a signed Slack event goes in, and we check what reached Slack, Clay, HubSpot and the database."""
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from leadbot.skill import load as load_skill
@@ -361,3 +363,29 @@ async def test_the_app_starts_and_stops_its_own_sweeper():
     app = create_app(make_settings().model_copy(update={"sweep_interval_seconds": 0}))
     async with app.router.lifespan_context(app):
         assert app.state.sweeper is None  # 0 turns it off
+
+
+# ---------- one thread per request ----------
+
+async def test_everything_the_ae_sees_is_in_the_thread_of_their_mention(world):
+    await world.mention("<@UBOT> <https://www.linkedin.com/company/acme>")      # rejected
+    world.hubspot.fail_with = [httpx.Response(503, json={})] * 20
+    await research_jane(world)                                                   # researching, then failure
+    world.hubspot.fail_with = []
+    await world.mention()                                                        # cache hit, then a brief
+
+    for job in world.store.jobs.values():
+        replies = [m for m in world.thread_messages() if m.get("thread_ts") == job.thread_ts]
+        assert replies, f"no reply in the thread of {job.slack_event_id}"
+    assert all(m.get("thread_ts") for m in world.thread_messages())  # nothing posted to the channel itself
+    assert all("thread_ts" not in m for m in world.alerts())          # only the maintainer alert is outside
+
+
+async def test_a_mention_inside_an_existing_thread_replies_in_that_thread(world):
+    body = json.dumps({"type": "event_callback", "event_id": "Ev-in-thread",
+                       "event": {"type": "app_mention", "user": "U_AE", "channel": "C_SALES",
+                                 "text": "<@UBOT> <https://www.linkedin.com/company/acme>",
+                                 "ts": "1700000500.000002", "thread_ts": "1700000400.000001"}}).encode()
+    await world.post_slack(body)
+    await world.runner.drain()
+    assert world.thread_messages()[-1]["thread_ts"] == "1700000400.000001"
