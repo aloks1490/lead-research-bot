@@ -3,14 +3,16 @@
 [![CI](https://github.com/aloks1490/lead-research-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/aloks1490/lead-research-bot/actions/workflows/ci.yml)
 
 AEs lose time researching people they should not contact, or researching the same person twice.
-This bot fixes both: mention it in Slack with a LinkedIn URL and, about a minute later, the thread holds a
+This bot fixes both: mention it in Slack with a LinkedIn URL and, about 6 to 12 seconds later, the thread holds a
 research brief that **opens with whether to reach out at all**. The same brief is saved as a note in HubSpot.
 
 ```
 @lead-research https://www.linkedin.com/in/jane-doe
 ```
 
-<!-- Demo GIF goes here: Slack mention -> brief in the thread -> note in HubSpot -->
+![Demo: an AE mentions the bot in Slack, a brief opening with "Hold: do not reach out" lands in the thread, and the deal shows on the contact in HubSpot](docs/demo.gif)
+
+_A live run: the person has an open deal in HubSpot, so the brief opens with the hold and tells the AE who to ask. The email is blurred in this recording._
 
 It is a Python service, not a no-code workflow: every request path is code with tests, retries and logs.
 

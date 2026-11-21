@@ -5,3 +5,6 @@ __pycache__/
 .ruff_cache/
 *.pyc
 .DS_Store
+
+# screen recordings: only the trimmed, blurred GIF is committed
+*.mov
