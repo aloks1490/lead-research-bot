@@ -93,32 +93,53 @@ The model writes words. Code decides everything else.
 
 ## Numbers
 
-Fill this in from your own runs. The audit table makes each one a query:
-
-```sql
--- tokens per model-written brief; multiply by your model's prices for cost per lookup
--- (a free NIM model costs nothing; claude-sonnet-5-5 is $2 per million input tokens and $10 per million output)
-select model, round(avg(input_tokens)) as input_tokens, round(avg(output_tokens)) as output_tokens
-from briefs where source <> 'template' group by model;
-
--- cache hit rate, checker pass rate
-select
-  round(avg((suppression->>'cache' = 'hit')::int), 2)                         as cache_hit_rate,
-  round(avg(check_passed::int) filter (where check_passed is not null), 2)   as checker_pass_rate
-from briefs;
-
--- seconds per lookup, cache hit vs miss
-select b.suppression->>'cache' as cache, round(avg(extract(epoch from j.updated_at - j.created_at))::numeric, 1) as seconds
-from research_jobs j join briefs b on b.job_id = j.id where j.status = 'done' group by 1;
-```
+Measured on the live bot (Render free plan, Frankfurt) on 2026-11-21: 13 real Slack mentions of 7 real LinkedIn
+profiles, plus one made-up profile and one company link. Writer `nvidia/nemotron-3-ultra-550b-a55b`, reviewer
+`nvidia/nemotron-3.5-super-vl-120b-a12b`, both on NVIDIA NIM's free tier.
 
 | Metric | Value |
 | --- | --- |
-| Seconds per lookup, cache hit | _to measure_ |
-| Seconds per lookup, cache miss | _to measure_ |
-| Cost per lookup | _to measure_ |
-| Cache hit rate | _to measure_ |
-| Checker pass rate | _to measure_ |
+| Seconds per lookup, cache miss | **11.6 s** median, 24.0 s slowest (6 lookups) |
+| Seconds per lookup, cache hit | **6.3 s** median, 8.6 s slowest (5 lookups) |
+| Cost per lookup, cache miss | **$0.004** median, $0.005 mean, all of it treg enrichment |
+| Cost per lookup, cache hit | **$0**: no enrichment call, and the NIM models are free |
+| Same brief on `claude-sonnet-5-5` instead | about $0.007 more per lookup (2,400 input and 190 output tokens) |
+| Checker pass rate | **10 of 11** model briefs. The one miss was a checker bug ("Australian"), since fixed |
+| Reviewer pass rate | **7 of 10** checked briefs. Its 3 rejections quoted 5 claims: 2 invented ("may need compliance proof for enterprise deals"), 3 fair paraphrases |
+| Model brief reached the AE | **7 of 11**; the other 4 got the template brief |
+| Review time | 0.5 s median, 1.4 s slowest |
+| Profile nobody can find | failed in 38.8 s for $0.002, with an apology in the thread and an alert |
+| Company link instead of a profile | rejected in 0.3 s, no lookup |
+
+- **Cache hit rate: 5 of 11 here, but that is test traffic** with deliberate repeats. The real rate depends on
+  how often AEs look up the same people within 30 days.
+- **A cache hit still writes a new brief.** CRM state can change between lookups (an open deal was added before
+  the hold case above), so HubSpot, the fit and the model run every time; only enrichment is cached.
+- **The reviewer is strict.** It caught both invented claims that the word checker passed, and wrongly flagged 3
+  paraphrases ("marketing agency" for a go-to-market agency). A wrong flag costs a template brief, not a wrong one.
+- **Small sample.** Eleven briefs show the shape, not exact rates. Every brief, review and cost is stored, so the
+  queries below give the numbers again on more traffic.
+
+```sql
+-- seconds per lookup, cache hit vs miss
+select b.suppression->>'cache' as cache, round(avg(extract(epoch from j.updated_at - j.created_at))::numeric, 1) as seconds
+from research_jobs j join briefs b on b.job_id = j.id where j.status = 'done' group by 1;
+
+-- enrichment cost per cache miss, in dollars (treg reports micro-dollars)
+select round(avg((raw->>'cost_micro')::int) / 1e6, 4) as usd from prospects where source = 'treg';
+
+-- cache hit rate, checker pass rate, reviewer pass rate
+select
+  round(avg((suppression->>'cache' = 'hit')::int), 2)                                  as cache_hit_rate,
+  round(avg((fallback_reason is null or fallback_reason not like 'checker:%')::int), 2) as checker_pass_rate,
+  round(avg((review->>'status' = 'passed')::int) filter (where review is not null), 2)  as reviewer_pass_rate
+from briefs;
+
+-- tokens per model-written brief (multiply by a paid model's prices: claude-sonnet-5-5 is $2 per million input
+-- tokens and $10 per million output)
+select model, round(avg(input_tokens)) as input_tokens, round(avg(output_tokens)) as output_tokens
+from briefs where source <> 'template' group by model;
+```
 
 **Choosing the model.** Three free NVIDIA NIM models wrote the same briefs with reasoning on and off
 ([docs/model-benchmark.md](docs/model-benchmark.md)). Kimi K3.1 Pro with reasoning off passed 8 of 8 and wrote the
@@ -203,7 +224,7 @@ jobs call HubSpot and the model at once, which handles the second.
 
 ## Limits
 
-- The numbers above still have to be measured on real traffic.
+- The numbers above come from one day of test traffic: 13 mentions, 11 briefs.
 - HubSpot contacts are matched by email. With no email found, suppression uses company-level signals only and
   the note is attached to the company.
 - treg reports emails as found, not verified as deliverable. The email is only used to match HubSpot contacts.
