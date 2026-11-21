@@ -70,6 +70,12 @@ def test_with_no_company_the_person_location_is_used_and_fit_is_not_strong():
     assert fit(company_name=None, company_country=None, employees=None).level == "unknown"  # a buyer in DE
 
 
+def test_zero_employees_is_an_unknown_size_not_a_small_company():
+    # Found on the live bot: treg gave 0 for a company with staff, and the fit said "0 employees is below 20".
+    result = fit(employees=0)
+    assert result.checks["size"] == "unknown" and not any("0 employees" in r for r in result.reasons)
+
+
 def test_too_little_data_is_unknown_not_strong():
     assert fit(company_country=None, person_location=None, employees=None).level == "unknown"
 

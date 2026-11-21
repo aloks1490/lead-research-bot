@@ -26,15 +26,24 @@ COMMON_WORDS = {
     "crm", "hubspot", "linkedin", "saas", "b2b", "smb", "smbs", "ae", "aes", "sdr", "bdr", "q1", "q2", "q3", "q4",
 }
 
-# A country in the facts also allows its adjective: "Germany" -> "German". Kept to the markets a European
-# compliance seller works in. A country missing here only costs a template brief; add it on the next line.
+# A country in the facts also allows its adjective: "Germany" -> "German". The fit names every country, target or
+# not ("Australia is outside the target markets"), so the brief may too. A country missing here only costs a
+# template brief; add it to the list.
 COUNTRY_ADJECTIVES = {
+    # target markets: EU, EEA, UK, Switzerland
     "germany": "german", "austria": "austrian", "switzerland": "swiss", "france": "french",
     "netherlands": "dutch", "belgium": "belgian", "luxembourg": "luxembourgish", "spain": "spanish",
     "portugal": "portuguese", "italy": "italian", "ireland": "irish", "united kingdom": "british",
     "denmark": "danish", "sweden": "swedish", "norway": "norwegian", "finland": "finnish", "poland": "polish",
-    "czechia": "czech", "czech republic": "czech", "estonia": "estonian", "india": "indian",
-    "united states": "american",
+    "czechia": "czech", "czech republic": "czech", "estonia": "estonian", "latvia": "latvian",
+    "lithuania": "lithuanian", "slovakia": "slovak", "slovenia": "slovenian", "hungary": "hungarian",
+    "romania": "romanian", "bulgaria": "bulgarian", "croatia": "croatian", "greece": "greek", "cyprus": "cypriot",
+    "malta": "maltese", "iceland": "icelandic",
+    # outside the target markets, but common in real profiles
+    "united states": "american", "canada": "canadian", "australia": "australian", "new zealand": "new zealander",
+    "india": "indian", "singapore": "singaporean", "israel": "israeli", "japan": "japanese", "china": "chinese",
+    "brazil": "brazilian", "mexico": "mexican", "south africa": "south african", "turkey": "turkish",
+    "ukraine": "ukrainian", "united arab emirates": "emirati",
 }
 
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
@@ -81,7 +90,7 @@ def _fact_words(facts: dict) -> set[str]:
         name = MONTHS[int(month) - 1]
         words |= {name, name[:3]}
     text = _dump(facts).casefold()
-    words |= {adjective for country, adjective in COUNTRY_ADJECTIVES.items() if country in text}
+    words |= {w for country, adjective in COUNTRY_ADJECTIVES.items() if country in text for w in adjective.split()}
     return words
 
 

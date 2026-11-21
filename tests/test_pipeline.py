@@ -40,6 +40,7 @@ async def test_new_profile_is_enriched_briefed_and_written_to_hubspot(world):
     assert "No conflict in HubSpot" in decisions
     assert "*Fit: strong*" in decisions and "Germany is a target market" in decisions
     assert "Jane Doe" in posted["blocks"][1]["text"]["text"]
+    assert "Email: jane.doe@acme.io _(unverified)_" in posted["blocks"][2]["text"]["text"]
 
     # HubSpot: a new contact, and one note attached to both the contact and the company.
     contact_id, contact = next(iter(world.hubspot.contacts.items()))

@@ -119,7 +119,10 @@ def evaluate(*, title: str | None, person_location: str | None, company_name: st
         checks["market"] = "fail"
         reasons.append(f"{where} is outside the target markets")
 
-    # Size: the band must overlap the target range.
+    # Size: the band must overlap the target range. A count of 0 means the source had no number (a real company
+    # with staff on LinkedIn has at least one), so it is unknown, not "below 20".
+    if not employees:
+        employees = None
     bounds = headcount_bounds(employees, employee_band)
     size_text = f"{employees}" if employees is not None else employee_band
     if bounds is None:

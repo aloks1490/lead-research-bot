@@ -229,14 +229,14 @@ class Runner:
         record = await self.d.store.get_brief(job.id)
         brief, suppression = record.brief, record.suppression
         fit = Fit.from_dict(suppression.get("fit"))
+        prospect = await self.d.store.get_prospect(job.linkedin_url_norm)
         if not record.slack_ts:
             written_by = "template" if record.source == "template" else record.model
             footer = f"cache {suppression['cache']} · written by {written_by} · job `{job.id}`"
             ts = await self.d.slack.post(job.channel, slack_ui.brief_text(brief, fit), thread_ts=job.thread_ts,
-                                         blocks=slack_ui.brief_blocks(brief, footer, fit))
+                                         blocks=slack_ui.brief_blocks(brief, footer, fit, prospect.email))
             await self.d.store.upsert_brief(job.id, slack_ts=ts)
         if not record.hubspot_note_id:
-            prospect = await self.d.store.get_prospect(job.linkedin_url_norm)
             company = await self.d.store.get_company(prospect.company_domain) if prospect.company_domain else None
             crm = CrmState.from_dict(suppression["crm"])
             contact_id = await self.d.hubspot.upsert_contact(

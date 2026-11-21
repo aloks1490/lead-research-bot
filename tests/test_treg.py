@@ -154,6 +154,7 @@ async def test_a_person_with_no_company_still_gets_a_model_brief(treg_world):
     assert (w.brief().source, w.brief().check_passed) == ("claude", True)
     person_block = w.thread_messages()[-1]["blocks"][2]["text"]["text"]
     assert "*Company*" not in person_block  # no empty heading in Slack
+    assert "Email: not found" in person_block  # this person was added without an email
 
 
 # ---------- small pieces ----------

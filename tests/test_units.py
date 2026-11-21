@@ -276,6 +276,22 @@ def test_a_country_allows_its_adjective_but_no_other():
     assert any("French" in p for p in check({**GOOD, "company": "Acme is a French fintech."}, FACTS))
 
 
+def test_a_country_outside_the_targets_allows_its_adjective_too():
+    # Found on the live bot: the fit said "Australia is outside the target markets" and the brief's "Australian"
+    # was rejected, because the list held only target markets.
+    facts = {**FACTS, "person": {**FACTS["person"], "location": "Brisbane, Queensland, Australia"}}
+    assert check({**GOOD, "company": "Acme is an Australian fintech."}, facts) == []
+    facts = {**FACTS, "person": {**FACTS["person"], "location": "Auckland, New Zealand"}}
+    assert check({**GOOD, "company": "Acme is a New Zealander fintech."}, facts) == []
+
+
+def test_a_headcount_of_zero_is_no_headcount():
+    from leadbot.clay import ClayCompany
+    assert ClayCompany(employee_count=0).employee_count is None
+    assert ClayCompany(employee_count="0").employee_count is None
+    assert ClayCompany(employee_count="1,200").employee_count == 1200
+
+
 def test_verdict_and_hold_reason_must_match_the_code():
     hold_facts = {**FACTS, "verdict": "hold", "hold_reason": "Already a customer"}
     assert any("verdict changed" in p for p in check(GOOD, hold_facts))

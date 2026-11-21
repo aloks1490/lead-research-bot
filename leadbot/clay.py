@@ -96,11 +96,12 @@ class ClayCompany(BaseModel):
     @field_validator("employee_count", mode="before")
     @classmethod
     def _parse_count(cls, value: Any) -> Any:
-        """'1,200' -> 1200. A range such as '201-500' was moved to employee_range by _split_range."""
+        """'1,200' -> 1200. A range such as '201-500' was moved to employee_range by _split_range. 0 is how some
+        sources say "no number" (treg returned it for a company with staff on LinkedIn), so it becomes None."""
         if isinstance(value, str):
             digits = value.replace(",", "").strip()
-            return int(digits) if digits.isdigit() else None
-        return value
+            value = int(digits) if digits.isdigit() else None
+        return value or None
 
     @field_validator("domain")
     @classmethod

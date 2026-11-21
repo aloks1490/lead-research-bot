@@ -41,9 +41,11 @@ def brief_text(brief: dict, fit: Fit) -> str:
     return f"{lead}. Fit: {fit.level}. {brief['headline']}"
 
 
-def brief_blocks(brief: dict, footer: str, fit: Fit) -> list[dict]:
+def brief_blocks(brief: dict, footer: str, fit: Fit, email: str | None = None) -> list[dict]:
     """The two decisions made in code come first: is there a reason not to reach out (HubSpot), and is this a
-    likely buyer at all (fit)? A hold opens with its reason: the AE needs that more than the research."""
+    likely buyer at all (fit)? A hold opens with its reason: the AE needs that more than the research.
+    The email comes from the enrichment lookup, not the model, and nothing checks that it delivers, so it is
+    marked unverified."""
     if brief["verdict"] == "hold":
         verdict = f":no_entry: *Hold: do not reach out.* {brief['hold_reason']}"
     else:
@@ -55,11 +57,15 @@ def brief_blocks(brief: dict, footer: str, fit: Fit) -> list[dict]:
         _section(verdict),
         _section(f"*{brief['headline']}*"),
         # The company part is left out when nothing is known about the company (the model returns "").
-        _section(f"*Person*\n{brief['person']}" + (f"\n\n*Company*\n{brief['company']}" if brief["company"].strip()
-                                                     else "")),
+        _section(f"*Person*\n{brief['person']}\n{_email_line(email)}"
+                 + (f"\n\n*Company*\n{brief['company']}" if brief["company"].strip() else "")),
         _section(f"*Angle*\n{brief['angle']}\n\n*Questions for the first call*\n{questions}"),
         {"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]},
     ]
+
+
+def _email_line(email: str | None) -> str:
+    return f"Email: {email} _(unverified)_" if email else "Email: not found"
 
 
 def _section(text: str) -> dict:
