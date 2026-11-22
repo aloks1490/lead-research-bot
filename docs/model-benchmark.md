@@ -100,6 +100,7 @@ must pass. **The word checker passes all 7 bad briefs.** Run on 2026-11-21 with
 | Nemotron 3.5 Super, review prompt v1 | 16/16 | 4/12 | 0 | 0.8 s | 2 runs |
 | MiniMax M3.1 Flash, prompt v1 | 13/16 | 0/12 | 14 of 26 | 0.5 s | rate-limited (HTTP 429) even alone |
 | Mistral Large 4 | – | – | most | ~40 s | 41.5 s for a one-line reply; too slow |
+| Mistral Large 4, retest 2026-11-22, prompt v3 | 0/24 | 0/18 | 39 of 39 | 45 s (limit) | every review timed out; see below |
 | Gemma 4 31B | – | – | all | – | no answer within 90 s, even to a one-line request |
 
 - **The prompt mattered more than the model.** Prompt v1's false alarms were of three kinds: missing facts that
@@ -108,13 +109,19 @@ must pass. **The word checker passes all 7 bad briefs.** Run on 2026-11-21 with
   example; false alarms went from 4/12 to 0/18 with no claim missed.
 - **Same family as the writer.** The aim was a reviewer from another model family, so it would not share the
   writer's blind spots, but every other-family candidate was down, too slow or rate-limited on the day.
+- **Mistral Large 4, retested on 2026-11-22: still unusable on the free endpoint.** A one-line request answered in
+  1.6 s, then 25 s a few minutes later. A real review (a 6,000-character prompt) streamed its first words after
+  15 s and finished after 271 s, about 4.5 minutes against the bot's 45-second limit. The result was the same with
+  strict JSON, plain JSON mode and no format, so schema enforcement is not the cause. It also reasons briefly even
+  with reasoning switched off. The swing from 1.6 s to 25 s points to a busy free endpoint, not the model itself.
 - **Optimistic numbers.** The set is small and the prompt was tuned on it (one v2 example is close to a test
   case). Production is the real test: every review is stored with its flagged claims in `briefs.review`.
 - **Live, locally:** three real profiles, reviews took 0.4–2.1 s. Before v3 the reviewer wrongly rejected Nico's
   "small US sales-tech company outside Northwall's target markets", which restates the fit; with v3 it passes.
 
 Raw results: [benchmarks/reviewer-v1.jsonl](benchmarks/reviewer-v1.jsonl) (v1, with the parallel run's errors),
-[reviewer-v2.jsonl](benchmarks/reviewer-v2.jsonl), [reviewer-v3.jsonl](benchmarks/reviewer-v3.jsonl).
+[reviewer-v2.jsonl](benchmarks/reviewer-v2.jsonl), [reviewer-v3.jsonl](benchmarks/reviewer-v3.jsonl),
+[reviewer-mistral-retest.jsonl](benchmarks/reviewer-mistral-retest.jsonl) (Mistral Large 4, all timeouts).
 
 ## Run it again
 
