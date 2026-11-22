@@ -101,6 +101,7 @@ must pass. **The word checker passes all 7 bad briefs.** Run on 2026-11-21 with
 | MiniMax M3.1 Flash, prompt v1 | 13/16 | 0/12 | 14 of 26 | 0.5 s | rate-limited (HTTP 429) even alone |
 | Mistral Large 4 | – | – | most | ~40 s | 41.5 s for a one-line reply; too slow |
 | Mistral Large 4, retest 2026-11-22, prompt v3 | 0/24 | 0/18 | 39 of 39 | 45 s (limit) | every review timed out; see below |
+| Step 5 Preview, 2026-11-22, prompt v3 | 11/24 | 0/18 | 22 of 39 | 20.6 s when it answered | right every time it answered, too slow; see below |
 | Gemma 4 31B | – | – | all | – | no answer within 90 s, even to a one-line request |
 
 - **The prompt mattered more than the model.** Prompt v1's false alarms were of three kinds: missing facts that
@@ -114,6 +115,12 @@ must pass. **The word checker passes all 7 bad briefs.** Run on 2026-11-21 with
   15 s and finished after 271 s, about 4.5 minutes against the bot's 45-second limit. The result was the same with
   strict JSON, plain JSON mode and no format, so schema enforcement is not the cause. It also reasons briefly even
   with reasoning switched off. The swing from 1.6 s to 25 s points to a busy free endpoint, not the model itself.
+- **Step 5 Preview (StepFun), tested on 2026-11-22: accurate, but too slow and unreliable on the free endpoint.**
+  It answered 17 of 39 reviews; 21 timed out at 45 s and 1 returned no JSON. Every answer it gave was right: it
+  caught the invented claim in all 11 answered bad briefs and passed all 6 answered clean ones. But answers took
+  8.8 to 41.9 s (median 20.6 s), against 0.5 s for Nemotron 3.5 Super in production. A one-line request took 1.3 s
+  once and 49 s once. Like Mistral, it reasons briefly even with reasoning off. It is the strongest other-family
+  candidate so far, worth retrying if the endpoint gets faster.
 - **Optimistic numbers.** The set is small and the prompt was tuned on it (one v2 example is close to a test
   case). Production is the real test: every review is stored with its flagged claims in `briefs.review`.
 - **Live, locally:** three real profiles, reviews took 0.4–2.1 s. Before v3 the reviewer wrongly rejected Nico's
@@ -121,7 +128,8 @@ must pass. **The word checker passes all 7 bad briefs.** Run on 2026-11-21 with
 
 Raw results: [benchmarks/reviewer-v1.jsonl](benchmarks/reviewer-v1.jsonl) (v1, with the parallel run's errors),
 [reviewer-v2.jsonl](benchmarks/reviewer-v2.jsonl), [reviewer-v3.jsonl](benchmarks/reviewer-v3.jsonl),
-[reviewer-mistral-retest.jsonl](benchmarks/reviewer-mistral-retest.jsonl) (Mistral Large 4, all timeouts).
+[reviewer-mistral-retest.jsonl](benchmarks/reviewer-mistral-retest.jsonl) (Mistral Large 4, all timeouts),
+[reviewer-step5.jsonl](benchmarks/reviewer-step5.jsonl) (Step 5 Preview).
 
 ## Run it again
 
